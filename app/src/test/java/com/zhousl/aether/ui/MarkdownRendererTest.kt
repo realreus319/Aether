@@ -1,5 +1,6 @@
 package com.zhousl.aether.ui
 
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -7,6 +8,58 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MarkdownRendererTest {
+    @Test(timeout = 1_000L)
+    fun parseMarkdownTreatsIncompleteTableLineAsParagraph() {
+        val blocks = parseMarkdownBlocks("| Effort | Share |")
+
+        assertEquals(1, blocks.size)
+        assertEquals("Paragraph", blocks.single()?.javaClass?.simpleName)
+    }
+
+    @Test(timeout = 1_000L)
+    fun parseMarkdownKeepsPipeTextInsideParagraphUntilTableIsComplete() {
+        val blocks = parseMarkdownBlocks(
+            """
+            The stream may contain a partial table next.
+            | Effort | Share |
+            """.trimIndent(),
+        )
+
+        assertEquals(1, blocks.size)
+        assertEquals("Paragraph", blocks.single()?.javaClass?.simpleName)
+    }
+
+    @Test(timeout = 1_000L)
+    fun parseMarkdownStillParsesCompleteTables() {
+        val blocks = parseMarkdownBlocks(
+            """
+            | Effort | Share |
+            |--------|-------|
+            | high   | 80%   |
+            """.trimIndent(),
+        )
+
+        assertEquals(1, blocks.size)
+        assertEquals("Table", blocks.single()?.javaClass?.simpleName)
+    }
+
+    @Test
+    fun markdownTableColumnWidthsFitTwoColumnTablesIntoViewport() {
+        val widths = markdownTableColumnWidths(columnCount = 2, viewportWidth = 320.dp)
+
+        assertEquals(2, widths.size)
+        assertEquals(320.dp, widths.reduce { total, width -> total + width })
+        assertTrue(widths[1] > widths[0])
+    }
+
+    @Test
+    fun markdownTableColumnWidthsKeepManyColumnTablesScrollable() {
+        val widths = markdownTableColumnWidths(columnCount = 5, viewportWidth = 320.dp)
+
+        assertEquals(5, widths.size)
+        assertTrue(widths.reduce { total, width -> total + width } > 320.dp)
+    }
+
     @Test
     fun parseMarkdownImageSupportsOptionalTitleAndAngleWrappedUrls() {
         val image = parseMarkdownImage(
@@ -115,5 +168,12 @@ class MarkdownRendererTest {
         assertTrue(layout.showAll)
         assertFalse(layout.scroll)
         assertNull(layout.maxHeightDp)
+    }
+
+    private fun parseMarkdownBlocks(markdown: String): List<*> {
+        val method = Class.forName("com.zhousl.aether.ui.MarkdownRendererKt")
+            .getDeclaredMethod("parseMarkdown", String::class.java)
+        method.isAccessible = true
+        return method.invoke(null, markdown) as List<*>
     }
 }

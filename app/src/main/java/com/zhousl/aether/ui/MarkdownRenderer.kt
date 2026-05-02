@@ -63,6 +63,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -105,6 +106,9 @@ private const val DefaultTextBlockMinHeightDp = 24
 private const val DefaultTextBlockMaxHeightDp = 2048
 private const val PreviewDialogMinHeightDp = 320
 private const val PreviewDialogMaxHeightDp = 820
+private val MarkdownTableMinColumnWidth = 128.dp
+private val MarkdownTableDescriptionMinColumnWidth = 160.dp
+private val MarkdownTableScrollableColumnWidth = 148.dp
 private val MarkdownImageHttpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
         .followRedirects(true)
@@ -381,52 +385,95 @@ private fun MarkdownTable(
     onLinkClick: (String) -> Unit,
     fadeSpan: MarkdownFadeSpan?,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .clip(RoundedCornerShape(18.dp))
-            .background(AetherSurface.copy(alpha = 0.92f)),
-    ) {
-        MarkdownTableRow(
-            cells = headers,
-            onLinkClick = onLinkClick,
-            fadeSpan = fadeSpan,
-            isHeader = true,
-        )
-        rows.forEachIndexed { index, row ->
+    val columnCount = remember(headers, rows) {
+        maxOf(headers.size, rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columnWidths = remember(columnCount, maxWidth) {
+            markdownTableColumnWidths(columnCount, maxWidth)
+        }
+        val tableWidth = columnWidths.fold(0.dp) { width, columnWidth -> width + columnWidth }
+            .coerceAtLeast(maxWidth)
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .clip(RoundedCornerShape(18.dp))
+                .background(AetherSurface.copy(alpha = 0.92f)),
+        ) {
             MarkdownTableRow(
-                cells = row,
+                cells = headers,
+                columnWidths = columnWidths,
+                tableWidth = tableWidth,
                 onLinkClick = onLinkClick,
                 fadeSpan = fadeSpan,
-                isHeader = false,
-                shaded = index % 2 == 1,
+                isHeader = true,
             )
+            rows.forEachIndexed { index, row ->
+                MarkdownTableRow(
+                    cells = row,
+                    columnWidths = columnWidths,
+                    tableWidth = tableWidth,
+                    onLinkClick = onLinkClick,
+                    fadeSpan = fadeSpan,
+                    isHeader = false,
+                    shaded = index % 2 == 1,
+                )
+            }
         }
+    }
+}
+
+internal fun markdownTableColumnWidths(
+    columnCount: Int,
+    viewportWidth: Dp,
+): List<Dp> {
+    val normalizedColumnCount = columnCount.coerceAtLeast(1)
+    return when {
+        normalizedColumnCount == 1 -> listOf(viewportWidth.coerceAtLeast(MarkdownTableMinColumnWidth))
+        normalizedColumnCount == 2 -> {
+            val firstColumn = (viewportWidth * 0.42f).coerceAtLeast(MarkdownTableMinColumnWidth)
+            val secondColumn = (viewportWidth - firstColumn)
+                .coerceAtLeast(MarkdownTableDescriptionMinColumnWidth)
+            listOf(firstColumn, secondColumn)
+        }
+        normalizedColumnCount == 3 -> {
+            val columnWidth = (viewportWidth / normalizedColumnCount)
+                .coerceAtLeast(MarkdownTableMinColumnWidth)
+            List(normalizedColumnCount) { columnWidth }
+        }
+        else -> List(normalizedColumnCount) { MarkdownTableScrollableColumnWidth }
     }
 }
 
 @Composable
 private fun MarkdownTableRow(
     cells: List<MarkdownSourceText>,
+    columnWidths: List<Dp>,
+    tableWidth: Dp,
     onLinkClick: (String) -> Unit,
     fadeSpan: MarkdownFadeSpan?,
     isHeader: Boolean,
     shaded: Boolean = false,
 ) {
     Row(
-        modifier = Modifier.background(
-            when {
-                isHeader -> AetherSurfaceHigh
-                shaded -> AetherSurface.copy(alpha = 0.68f)
-                else -> Color.Transparent
-            }
-        )
+        modifier = Modifier
+            .width(tableWidth)
+            .background(
+                when {
+                    isHeader -> AetherSurfaceHigh
+                    shaded -> AetherSurface.copy(alpha = 0.68f)
+                    else -> Color.Transparent
+                }
+            )
     ) {
-        cells.forEach { cell ->
+        columnWidths.forEachIndexed { index, columnWidth ->
+            val cell = cells.getOrNull(index) ?: MarkdownSourceText("", 0)
             Box(
                 modifier = Modifier
-                    .widthIn(min = 128.dp)
+                    .width(columnWidth)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
                 MarkdownRichTextBlock(
@@ -1306,10 +1353,14 @@ private fun parseMarkdown(markdown: String): List<MarkdownBlock> {
         val paragraphStartOffset = line.startOffset
         while (index < lines.size) {
             val candidate = lines[index].text
-            if (candidate.trim().isBlank() || beginsSpecialBlock(candidate)) {
+            if (candidate.trim().isBlank() || beginsSpecialBlock(lines, index)) {
                 break
             }
             paragraphLines += candidate.trimEnd()
+            index++
+        }
+        if (paragraphLines.isEmpty()) {
+            paragraphLines += line.text.trimEnd()
             index++
         }
         blocks += MarkdownBlock.Paragraph(
@@ -1352,11 +1403,15 @@ private fun contentStartOffset(
     return contentOffset
 }
 
-private fun beginsSpecialBlock(line: String): Boolean {
+private fun beginsSpecialBlock(
+    lines: List<MarkdownLine>,
+    index: Int,
+): Boolean {
+    val line = lines.getOrNull(index)?.text ?: return false
     val trimmed = line.trim()
     return trimmed.startsWith("```") ||
         looksLikeMarkdownImageLine(trimmed) ||
-        looksLikeMarkdownTableLine(trimmed) ||
+        looksLikeMarkdownTable(lines, index) ||
         headingPattern.matches(trimmed) ||
         unorderedPattern.matches(trimmed) ||
         orderedPattern.matches(trimmed) ||
