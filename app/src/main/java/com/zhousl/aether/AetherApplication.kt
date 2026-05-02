@@ -46,7 +46,20 @@ class AetherApplication : Application() {
             val config = PostHogAndroidConfig(
                 apiKey = BuildConfig.POSTHOG_API_KEY,
                 host = BuildConfig.POSTHOG_HOST,
-            )
+            ).apply {
+                captureApplicationLifecycleEvents = true
+                captureDeepLinks = true
+                captureScreenViews = true
+                debug = BuildConfig.DEBUG
+                releaseIdentifier = "${BuildConfig.APPLICATION_ID}@${BuildConfig.VERSION_NAME}+${BuildConfig.VERSION_CODE}"
+                errorTrackingConfig.autoCapture = true
+                errorTrackingConfig.inAppIncludes.addAll(
+                    listOf(
+                        "com.zhousl.aether",
+                        "com.baimoqilin.aether",
+                    ),
+                )
+            }
             PostHogAndroid.setup(this, config)
             isPostHogInitialized = true
         }

@@ -1,16 +1,34 @@
 import java.util.Properties
+import com.posthog.android.PostHogCliExecTask
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.posthog.android)
 }
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) load(file.inputStream())
 }
+
+fun localOrEnv(
+    localName: String,
+    envName: String,
+    defaultValue: String = "",
+): String = (System.getenv(envName) ?: localProperties.getProperty(localName, defaultValue)).trim()
+
+val posthogCliHost = localOrEnv(
+    localName = "posthog.cliHost",
+    envName = "POSTHOG_CLI_HOST",
+    defaultValue = localProperties.getProperty("posthog.host", "https://us.posthog.com")
+        .replace(".i.posthog.com", ".posthog.com"),
+)
+val posthogProjectId = localOrEnv("posthog.projectId", "POSTHOG_PROJECT_ID")
+val posthogCliApiKey = localOrEnv("posthog.cliApiKey", "POSTHOG_CLI_API_KEY")
+val posthogExecutable = localOrEnv("posthog.executable", "POSTHOG_EXECUTABLE")
 
 android {
     namespace = "com.zhousl.aether"
@@ -97,4 +115,17 @@ dependencies {
     testImplementation(libs.junit4)
     testImplementation(libs.squareup.okhttp.mockwebserver)
     testImplementation(libs.json)
+}
+
+tasks.withType<PostHogCliExecTask>().configureEach {
+    postHogHost.set(posthogCliHost)
+    if (posthogProjectId.isNotBlank()) {
+        postHogProjectId.set(posthogProjectId)
+    }
+    if (posthogCliApiKey.isNotBlank()) {
+        postHogApiKey.set(posthogCliApiKey)
+    }
+    if (posthogExecutable.isNotBlank()) {
+        postHogExecutable.set(posthogExecutable)
+    }
 }
