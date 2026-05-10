@@ -24,11 +24,15 @@ class SettingsRepository(
             modelId = preferences[MODEL_ID] ?: AppSettings().modelId,
             systemPrompt = preferences[SYSTEM_PROMPT] ?: AppSettings().systemPrompt,
             tavilyApiKey = preferences[TAVILY_API_KEY].orEmpty(),
+            tavilyBaseUrl = normalizeTavilyBaseUrl(
+                preferences[TAVILY_BASE_URL] ?: AppSettings().tavilyBaseUrl
+            ),
             llmInactivityReconnectTimeoutSeconds = normalizeLlmInactivityReconnectTimeoutSeconds(
                 preferences[LLM_INACTIVITY_RECONNECT_TIMEOUT_SECONDS]
             ),
             keepTasksRunningInBackground = preferences[KEEP_TASKS_RUNNING_IN_BACKGROUND] ?: true,
             notifyOnTaskCompletion = preferences[NOTIFY_ON_TASK_COMPLETION] ?: true,
+            termuxSetupCompleted = preferences[TERMUX_SETUP_COMPLETED] ?: false,
             agentModeAuthorizationEnabled = preferences[AGENT_MODE_AUTHORIZATION_ENABLED] ?: false,
             agentModeAuthorizationMethod = AgentModeAuthorizationMethod.fromStorage(
                 preferences[AGENT_MODE_AUTHORIZATION_METHOD],
@@ -84,13 +88,34 @@ class SettingsRepository(
     ) {
         context.dataStore.edit { prefs ->
             val current = parseProviderConfigs(prefs[PROVIDER_CONFIGS].orEmpty())
+            val currentProvider = LlmProvider.fromStorage(prefs[PROVIDER])
+            val currentApiKey = prefs[API_KEY].orEmpty()
+            val currentBaseUrl = prefs[BASE_URL] ?: AppSettings().baseUrl
+            val currentModelId = prefs[MODEL_ID] ?: AppSettings().modelId
+            val toggledConfigWasCurrent = current
+                .firstOrNull { it.id == id }
+                ?.matchesStoredModel(
+                    provider = currentProvider,
+                    apiKey = currentApiKey,
+                    baseUrl = currentBaseUrl,
+                    modelId = currentModelId,
+                ) == true
             val updated = current.map { config ->
                 if (config.id == id) config.copy(isEnabled = enabled) else config
             }
             prefs[PROVIDER_CONFIGS] = serializeProviderConfigs(updated)
 
-            val fallbackOption = updated.availableModelOptions().firstOrNull()
-            if (fallbackOption != null) {
+            val availableOptions = updated.availableModelOptions()
+            val currentStillAvailable = availableOptions.any {
+                it.matchesStoredModel(
+                    provider = currentProvider,
+                    apiKey = currentApiKey,
+                    baseUrl = currentBaseUrl,
+                    modelId = currentModelId,
+                )
+            }
+            val fallbackOption = availableOptions.firstOrNull()
+            if (!enabled && toggledConfigWasCurrent && !currentStillAvailable && fallbackOption != null) {
                 prefs[PROVIDER] = fallbackOption.providerType.storageValue
                 prefs[API_KEY] = fallbackOption.apiKey
                 prefs[BASE_URL] = fallbackOption.baseUrl
@@ -112,12 +137,14 @@ class SettingsRepository(
             it[MODEL_ID] = settings.modelId
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
+            it[TAVILY_BASE_URL] = normalizeTavilyBaseUrl(settings.tavilyBaseUrl)
             it[LLM_INACTIVITY_RECONNECT_TIMEOUT_SECONDS] =
                 normalizeLlmInactivityReconnectTimeoutSeconds(
                     settings.llmInactivityReconnectTimeoutSeconds
                 )
             it[KEEP_TASKS_RUNNING_IN_BACKGROUND] = settings.keepTasksRunningInBackground
             it[NOTIFY_ON_TASK_COMPLETION] = settings.notifyOnTaskCompletion
+            it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
             it[AGENT_MODE_AUTHORIZATION_METHOD] = settings.agentModeAuthorizationMethod.storageValue
             it[LANGUAGE] = settings.language.storageValue
@@ -156,6 +183,10 @@ class SettingsRepository(
         context.dataStore.edit { it[TAVILY_API_KEY] = value }
     }
 
+    suspend fun updateTavilyBaseUrl(value: String) {
+        context.dataStore.edit { it[TAVILY_BASE_URL] = normalizeTavilyBaseUrl(value) }
+    }
+
     suspend fun updateLanguage(language: AppLanguage) {
         context.dataStore.edit { it[LANGUAGE] = language.storageValue }
     }
@@ -172,12 +203,14 @@ class SettingsRepository(
             it[MODEL_ID] = settings.modelId
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
+            it[TAVILY_BASE_URL] = normalizeTavilyBaseUrl(settings.tavilyBaseUrl)
             it[LLM_INACTIVITY_RECONNECT_TIMEOUT_SECONDS] =
                 normalizeLlmInactivityReconnectTimeoutSeconds(
                     settings.llmInactivityReconnectTimeoutSeconds
                 )
             it[KEEP_TASKS_RUNNING_IN_BACKGROUND] = settings.keepTasksRunningInBackground
             it[NOTIFY_ON_TASK_COMPLETION] = settings.notifyOnTaskCompletion
+            it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
             it[AGENT_MODE_AUTHORIZATION_METHOD] = settings.agentModeAuthorizationMethod.storageValue
             it[LANGUAGE] = settings.language.storageValue
@@ -238,12 +271,15 @@ class SettingsRepository(
         val MODEL_ID = stringPreferencesKey("model_id")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val TAVILY_API_KEY = stringPreferencesKey("tavily_api_key")
+        val TAVILY_BASE_URL = stringPreferencesKey("tavily_base_url")
         val LLM_INACTIVITY_RECONNECT_TIMEOUT_SECONDS =
             intPreferencesKey("llm_inactivity_reconnect_timeout_seconds")
         val KEEP_TASKS_RUNNING_IN_BACKGROUND =
             booleanPreferencesKey("keep_tasks_running_in_background")
         val NOTIFY_ON_TASK_COMPLETION =
             booleanPreferencesKey("notify_on_task_completion")
+        val TERMUX_SETUP_COMPLETED =
+            booleanPreferencesKey("termux_setup_completed")
         val AGENT_MODE_AUTHORIZATION_ENABLED =
             booleanPreferencesKey("agent_mode_authorization_enabled")
         val AGENT_MODE_AUTHORIZATION_METHOD =
@@ -265,6 +301,28 @@ class SettingsRepository(
         const val MaxUnsupportedParallelToolCallKeys = 128
     }
 }
+
+private fun LlmProviderConfig.matchesStoredModel(
+    provider: LlmProvider,
+    apiKey: String,
+    baseUrl: String,
+    modelId: String,
+): Boolean =
+    providerType == provider &&
+        this.apiKey.trim() == apiKey.trim() &&
+        this.baseUrl.trim() == baseUrl.trim() &&
+        enabledModels().contains(modelId.trim())
+
+private fun ProviderModelOption.matchesStoredModel(
+    provider: LlmProvider,
+    apiKey: String,
+    baseUrl: String,
+    modelId: String,
+): Boolean =
+    providerType == provider &&
+        this.apiKey.trim() == apiKey.trim() &&
+        this.baseUrl.trim() == baseUrl.trim() &&
+        this.modelId.trim() == modelId.trim()
 
 private fun parseStoredStringList(rawValue: String): List<String> {
     if (rawValue.isBlank()) return emptyList()

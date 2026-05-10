@@ -105,9 +105,11 @@ data class AppSettings(
     val modelId: String = LlmProvider.OpenAiCompatible.defaultModelId,
     val systemPrompt: String = "You are Aether, a local-first Android agent that can call tools and complete tasks on-device. Use available tools instead of guessing local state.",
     val tavilyApiKey: String = "",
+    val tavilyBaseUrl: String = DefaultTavilyBaseUrl,
     val llmInactivityReconnectTimeoutSeconds: Int = DefaultLlmInactivityReconnectTimeoutSeconds,
     val keepTasksRunningInBackground: Boolean = true,
     val notifyOnTaskCompletion: Boolean = true,
+    val termuxSetupCompleted: Boolean = false,
     val agentModeAuthorizationEnabled: Boolean = false,
     val agentModeAuthorizationMethod: AgentModeAuthorizationMethod = AgentModeAuthorizationMethod.Shizuku,
     val language: AppLanguage = defaultAppLanguage(),
@@ -148,6 +150,9 @@ fun normalizeLlmInactivityReconnectTimeoutSeconds(
         MaxLlmInactivityReconnectTimeoutSeconds,
     )
 }
+
+fun normalizeTavilyBaseUrl(value: String): String =
+    value.trim().ifBlank { DefaultTavilyBaseUrl }
 
 fun AppSettings.shouldLaunchOnboarding(
     onboardingVersion: Int = CurrentOnboardingVersion,
