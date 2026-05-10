@@ -470,6 +470,13 @@ fun AetherStrings.toolInvocationTitleLabel(
         subject = arguments?.optString("url").orEmpty(),
         fallback = if (isChinese) "网页" else "web page",
     )
+    "aether_config_get",
+    "aether_config_set",
+    "aether_skill_manage",
+    "aether_mcp_manage",
+    "aether_termux_manage",
+    "aether_agent_mode_manage",
+    "aether_developer_manage" -> formatAetherToolTitle(toolName, isRunning, arguments)
     "agent_display" -> formatAgentDisplayTitle(isRunning, arguments)
     else -> if (isChinese) {
         if (isRunning) "正在使用 $toolName" else "已使用 $toolName"
@@ -505,9 +512,138 @@ fun AetherStrings.toolInvocationCommandLabel(toolName: String, arguments: JSONOb
         } else {
             "fetch ${arguments.optString("url").trim()}".trim()
         }
+        "aether_config_get",
+        "aether_config_set",
+        "aether_skill_manage",
+        "aether_mcp_manage",
+        "aether_termux_manage",
+        "aether_agent_mode_manage",
+        "aether_developer_manage" -> summarizeAetherToolCommand(toolName, arguments)
         "agent_display" -> summarizeAgentDisplayCommand(arguments)
         else -> toolName
     }.trim()
+}
+
+private fun AetherStrings.formatAetherToolTitle(
+    toolName: String,
+    isRunning: Boolean,
+    arguments: JSONObject?,
+): String {
+    val action = arguments?.optString("action").orEmpty().trim()
+    return when (toolName.lowercase()) {
+        "aether_config_get" -> formatArgumentDrivenTitle(isRunning, "Reading", "Read", formatAetherCategories(arguments), "Aether settings")
+        "aether_config_set" -> formatArgumentDrivenTitle(isRunning, "Updating", "Updated", arguments?.optString("category").orEmpty(), "Aether settings")
+        "aether_skill_manage" -> when (action.lowercase()) {
+            "install_remote" -> formatArgumentDrivenTitle(isRunning, "Installing", "Installed", arguments?.optString("url").orEmpty(), "Agent Skill")
+            "remove" -> formatArgumentDrivenTitle(isRunning, "Removing", "Removed", optAetherString(arguments, "skill_id", "skillId"), "Agent Skill")
+            "set_enabled" -> formatArgumentDrivenTitle(isRunning, "Updating", "Updated", optAetherString(arguments, "skill_id", "skillId"), "Agent Skill")
+            else -> if (isRunning) "Reading Agent Skills" else "Read Agent Skills"
+        }
+        "aether_mcp_manage" -> when (action.lowercase()) {
+            "upsert_streamable_http", "upsert_stdio" -> formatArgumentDrivenTitle(isRunning, "Saving", "Saved", optAetherString(arguments, "display_name", "displayName"), "MCP server")
+            "remove" -> formatArgumentDrivenTitle(isRunning, "Removing", "Removed", optAetherString(arguments, "server_id", "serverId"), "MCP server")
+            "set_enabled" -> formatArgumentDrivenTitle(isRunning, "Updating", "Updated", optAetherString(arguments, "server_id", "serverId"), "MCP server")
+            else -> if (isRunning) "Reading MCP servers" else "Read MCP servers"
+        }
+        "aether_termux_manage" -> when (action.lowercase()) {
+            "configure_root_access" -> if (isRunning) "Configuring Termux root access" else "Configured Termux root access"
+            "inspect_root_setup" -> if (isRunning) "Checking Root setup" else "Checked Root setup"
+            else -> if (isRunning) "Checking Termux setup" else "Checked Termux setup"
+        }
+        "aether_agent_mode_manage" -> when (action.lowercase()) {
+            "set_authorization" -> if (isRunning) "Updating Agent Mode authorization" else "Updated Agent Mode authorization"
+            "request_shizuku_permission" -> if (isRunning) "Requesting Shizuku permission" else "Requested Shizuku permission"
+            "stop_display" -> if (isRunning) "Stopping Agent Mode display" else "Stopped Agent Mode display"
+            "refresh_displays" -> if (isRunning) "Refreshing Agent Mode displays" else "Refreshed Agent Mode displays"
+            else -> if (isRunning) "Checking Agent Mode authorization" else "Checked Agent Mode authorization"
+        }
+        "aether_developer_manage" -> if (isRunning) "Reading Aether diagnostics" else "Read Aether diagnostics"
+        else -> if (isRunning) "Managing Aether" else "Managed Aether"
+    }
+}
+
+private fun AetherStrings.summarizeAetherToolCommand(
+    toolName: String,
+    arguments: JSONObject,
+): String {
+    val action = arguments.optString("action").trim()
+    return when (toolName.lowercase()) {
+        "aether_config_get" -> "aether_config_get categories=${formatAetherCategories(arguments).ifBlank { "all" }}"
+        "aether_config_set" -> "aether_config_set category=${arguments.optString("category").trim()} ${summarizeAetherSettingsPatch(arguments.optJSONObject("settings"))}".trim()
+        "aether_skill_manage" -> buildString {
+            append("aether_skill_manage action=")
+            append(action.ifBlank { "list" })
+            appendAetherKeyValue(arguments, "skill_id", "skillId")
+            appendAetherKeyValue(arguments, "url")
+            if (arguments.has("enabled")) append(" enabled=").append(arguments.optBoolean("enabled"))
+        }.trim()
+        "aether_mcp_manage" -> buildString {
+            append("aether_mcp_manage action=")
+            append(action.ifBlank { "list" })
+            appendAetherKeyValue(arguments, "server_id", "serverId")
+            appendAetherKeyValue(arguments, "display_name", "displayName")
+            appendAetherKeyValue(arguments, "url")
+            appendAetherKeyValue(arguments, "command")
+            if (arguments.has("enabled")) append(" enabled=").append(arguments.optBoolean("enabled"))
+        }.trim()
+        "aether_termux_manage" -> "aether_termux_manage action=${action.ifBlank { "inspect_setup" }}"
+        "aether_agent_mode_manage" -> buildString {
+            append("aether_agent_mode_manage action=")
+            append(action.ifBlank { "inspect_authorization" })
+            if (arguments.has("enabled")) append(" enabled=").append(arguments.optBoolean("enabled"))
+            appendAetherKeyValue(arguments, "method")
+        }.trim()
+        "aether_developer_manage" -> buildString {
+            append("aether_developer_manage action=")
+            append(action.ifBlank { "read_diagnostics" })
+            appendAetherKeyValue(arguments, "include")
+            appendAetherKeyValue(arguments, "max_chars", "maxChars")
+        }.trim()
+        else -> toolName
+    }
+}
+
+private fun formatAetherCategories(arguments: JSONObject?): String {
+    val categories = arguments?.optJSONArray("categories") ?: return ""
+    return buildList {
+        for (index in 0 until categories.length()) {
+            val value = categories.optString(index).trim()
+            if (value.isNotBlank()) add(value)
+        }
+    }.joinToString(",")
+}
+
+private fun summarizeAetherSettingsPatch(settings: JSONObject?): String {
+    if (settings == null) return ""
+    val keys = buildList {
+        settings.keys().forEach { add(it) }
+    }
+    return if (keys.isEmpty()) "" else "fields=${keys.joinToString(",")}"
+}
+
+private fun optAetherString(
+    arguments: JSONObject?,
+    primary: String,
+    secondary: String,
+): String = arguments?.optString(primary).orEmpty().ifBlank {
+    arguments?.optString(secondary).orEmpty()
+}
+
+private fun StringBuilder.appendAetherKeyValue(
+    arguments: JSONObject,
+    primary: String,
+    secondary: String = "",
+) {
+    val value = arguments.optString(primary).ifBlank {
+        if (secondary.isBlank()) "" else arguments.optString(secondary)
+    }.trim()
+    if (value.isNotBlank()) {
+        append(' ')
+        append(primary)
+        append('=')
+        append(value.take(96))
+        if (value.length > 96) append("...")
+    }
 }
 
 fun AetherStrings.formatArgumentDrivenTitle(
@@ -529,6 +665,13 @@ fun AetherStrings.formatAgentDisplayTitle(
     arguments: JSONObject?,
 ): String {
     return when (arguments?.optString("action").orEmpty().lowercase()) {
+        "list_apps", "apps", "installed_apps" -> formatArgumentDrivenTitle(
+            isRunning = isRunning,
+            progressiveVerb = if (isChinese) "正在读取" else "Reading",
+            completedVerb = if (isChinese) "已读取" else "Read",
+            subject = arguments?.optString("query").orEmpty(),
+            fallback = if (isChinese) "已安装应用" else "installed apps",
+        )
         "start" -> statusLabel(isRunning, "Starting Agent Mode display", "Started Agent Mode display", "正在启动 Agent 模式显示", "已启动 Agent 模式显示")
         "status" -> statusLabel(isRunning, "Checking Agent Mode display", "Checked Agent Mode display", "正在检查 Agent 模式显示", "已检查 Agent 模式显示")
         "launch" -> formatArgumentDrivenTitle(
@@ -653,12 +796,16 @@ private fun AetherStrings.summarizeAgentDisplayCommand(arguments: JSONObject?): 
     if (arguments == null) return "agent_display"
     val action = arguments.optString("action").trim().ifBlank { "unknown" }
     val target = arguments.optString("target").trim()
+    val query = arguments.optString("query").trim()
     return buildString {
         append(if (isChinese) "agent_display " else "agent_display ")
         append(action)
         if (target.isNotBlank()) {
             append(" ")
             append(target)
+        } else if (query.isNotBlank()) {
+            append(" ")
+            append(query)
         }
     }.trim()
 }

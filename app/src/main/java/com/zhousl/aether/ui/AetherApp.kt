@@ -118,6 +118,8 @@ import com.zhousl.aether.data.isOnboardingComplete
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.data.shouldShowResumeSetupBanner
 import com.zhousl.aether.termux.TermuxContract
+import com.zhousl.aether.termux.TermuxSetupIssue
+import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.ui.theme.AetherBackground
 import com.zhousl.aether.ui.theme.AetherOnSurface
 import com.zhousl.aether.ui.theme.AetherOnSurfaceVariant
@@ -205,7 +207,21 @@ private fun AetherAppContent(
     val currentMessages = activeSession?.messages.orEmpty()
     val selectedSkillIds = activeSession?.selectedSkillIds ?: uiState.draftSelectedSkillIds
     val selectedMcpServerIds = activeSession?.activeMcpServerIds ?: uiState.draftSelectedMcpServerIds
-    val agentModeSelected = activeSession?.agentModeEnabled ?: uiState.draftAgentModeEnabled
+    val effectiveTermuxSetupState = effectiveTermuxSetupState(
+        setupState = uiState.termuxSetupState,
+        developerOverride = uiState.developerTermuxReadyOverride,
+        termuxSetupCompleted = uiState.settings.termuxSetupCompleted,
+        rootBackgroundLaunchEnabled = uiState.rootSetupState.isReady ||
+            (
+                uiState.settings.agentModeAuthorizationEnabled &&
+                    uiState.settings.agentModeAuthorizationMethod == AgentModeAuthorizationMethod.Root
+                ),
+    )
+    val agentModeReady = uiState.settings.agentModeAuthorizationEnabled &&
+        effectiveTermuxSetupState.isReady &&
+        uiState.agentModeAuthorizationState.isReady
+    val agentModeSelected = (activeSession?.agentModeEnabled ?: uiState.draftAgentModeEnabled) &&
+        agentModeReady
     val conversationModelOptions = remember(uiState.providerConfigs, uiState.settings) {
         buildConversationModelOptions(
             settings = uiState.settings,
@@ -495,7 +511,7 @@ private fun AetherAppContent(
                         replayMode = uiState.isOnboardingReplay,
                         existingProviderConfig = activeProviderConfig,
                         isFetchingModels = uiState.isFetchingModels,
-                        termuxSetupState = uiState.termuxSetupState,
+                        termuxSetupState = effectiveTermuxSetupState,
                         rootSetupState = uiState.rootSetupState,
                         agentModeAuthorizationMethod = uiState.settings.agentModeAuthorizationMethod,
                         tavilyApiKey = uiState.settings.tavilyApiKey,
@@ -551,7 +567,7 @@ private fun AetherAppContent(
                     availableMcpServers = uiState.mcpServers.filter { it.isEnabled },
                     selectedSkillIds = selectedSkillIds,
                     selectedMcpServerIds = selectedMcpServerIds,
-                    agentModeAvailable = uiState.settings.agentModeAuthorizationEnabled,
+                    agentModeAvailable = agentModeReady,
                     agentModeSelected = agentModeSelected,
                     agentModeDisplayState = uiState.agentModeDisplayState,
                     allowRootImageRead = uiState.rootSetupState.isReady ||
@@ -561,7 +577,7 @@ private fun AetherAppContent(
                                 uiState.agentModeAuthorizationState.isReady
                             ),
                     isEditing = uiState.editingMessageId != null,
-                    termuxSetupState = uiState.termuxSetupState,
+                    termuxSetupState = effectiveTermuxSetupState,
                     showResumeSetupBanner = shouldShowResumeSetupBanner(
                         settings = uiState.settings,
                         messageCount = currentMessages.size,
@@ -640,6 +656,8 @@ private fun AetherAppContent(
                         startTermuxSetupAction("chat_install_termux") { openTermuxInstallPage(context) }
                     },
                     onRefreshTermuxSetup = viewModel::refreshTermuxSetup,
+                    onAttachAgentModePreviewSurface = viewModel::attachAgentModePreviewSurface,
+                    onDetachAgentModePreviewSurface = viewModel::detachAgentModePreviewSurface,
                     onPauseGeneration = viewModel::pauseGeneration,
                     onResumeOnboarding = viewModel::resumeOnboarding,
                     onDismissStarterPromptHint = viewModel::dismissStarterPromptHint,
@@ -653,6 +671,7 @@ private fun AetherAppContent(
                     modelId = uiState.settings.modelId,
                     systemPrompt = uiState.settings.systemPrompt,
                     tavilyApiKey = uiState.settings.tavilyApiKey,
+                    tavilyBaseUrl = uiState.settings.tavilyBaseUrl,
                     llmInactivityReconnectTimeoutSeconds = uiState.settings.llmInactivityReconnectTimeoutSeconds,
                     keepTasksRunningInBackground = uiState.settings.keepTasksRunningInBackground,
                     notifyOnTaskCompletion = uiState.settings.notifyOnTaskCompletion,
@@ -668,7 +687,8 @@ private fun AetherAppContent(
                     defaultNamingModelKey = uiState.settings.defaultNamingModelKey,
                     agentModeDisplayState = uiState.agentModeDisplayState,
                     providerConfigs = uiState.providerConfigs,
-                    termuxSetupState = uiState.termuxSetupState,
+                    termuxSetupState = effectiveTermuxSetupState,
+                    developerTermuxReadyOverride = uiState.developerTermuxReadyOverride,
                     installedSkills = uiState.installedSkills,
                     mcpServers = uiState.mcpServers,
                     isFetchingModels = uiState.isFetchingModels,
@@ -732,6 +752,7 @@ private fun AetherAppContent(
                     onOpenPrivacyPolicy = { openExternalUrl(context, AetherPrivacyPolicyUrl) },
                     onCheckForUpdates = viewModel::checkForUpdates,
                     onForceUpdateCheckForTesting = viewModel::forceUpdateCheckForTesting,
+                    onSetDeveloperTermuxReadyOverride = viewModel::setDeveloperTermuxReadyOverride,
                     onDownloadAndInstallUpdate = viewModel::downloadAndInstallUpdate,
                     onBack = viewModel::closeSettings,
                 )
@@ -1633,6 +1654,33 @@ private fun SessionRow(
             color = AetherOnSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun effectiveTermuxSetupState(
+    setupState: TermuxSetupState,
+    developerOverride: Boolean?,
+    termuxSetupCompleted: Boolean,
+    rootBackgroundLaunchEnabled: Boolean,
+): TermuxSetupState = when (developerOverride) {
+    true -> TermuxSetupState(previouslyConfigured = termuxSetupCompleted && !rootBackgroundLaunchEnabled)
+    false -> TermuxSetupState(
+        issue = TermuxSetupIssue.DispatchFailed,
+        detail = "Developer override: Termux is treated as not ready.",
+        previouslyConfigured = termuxSetupCompleted && !rootBackgroundLaunchEnabled,
+    )
+    null -> if (rootBackgroundLaunchEnabled) {
+        TermuxSetupState(previouslyConfigured = true)
+    } else if (termuxSetupCompleted && setupState.issue == TermuxSetupIssue.ExternalAppsDisabled) {
+        setupState.copy(
+            issue = TermuxSetupIssue.DispatchFailed,
+            detail = "",
+            previouslyConfigured = true,
+        )
+    } else {
+        setupState.copy(
+            previouslyConfigured = setupState.previouslyConfigured || termuxSetupCompleted,
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.zhousl.aether.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -94,6 +95,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -123,6 +125,7 @@ import com.zhousl.aether.data.availableModels
 import com.zhousl.aether.data.enabledModels
 import com.zhousl.aether.data.findModelOption
 import com.zhousl.aether.data.normalizeLlmInactivityReconnectTimeoutSeconds
+import com.zhousl.aether.data.normalizeTavilyBaseUrl
 import com.zhousl.aether.data.quickActionLabel
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.termux.TermuxSetupState
@@ -246,6 +249,7 @@ fun SettingsScreen(
     modelId: String,
     systemPrompt: String,
     tavilyApiKey: String,
+    tavilyBaseUrl: String,
     llmInactivityReconnectTimeoutSeconds: Int,
     keepTasksRunningInBackground: Boolean,
     notifyOnTaskCompletion: Boolean,
@@ -262,12 +266,14 @@ fun SettingsScreen(
     agentModeDisplayState: AgentModeDisplayState,
     providerConfigs: List<LlmProviderConfig>,
     termuxSetupState: TermuxSetupState,
+    developerTermuxReadyOverride: Boolean?,
     installedSkills: List<com.zhousl.aether.data.InstalledSkill>,
     mcpServers: List<com.zhousl.aether.data.McpServerConfig>,
     isFetchingModels: Boolean,
     appUpdate: AppUpdateUiState,
     onSave: (
         LlmProvider,
+        String,
         String,
         String,
         String,
@@ -312,26 +318,31 @@ fun SettingsScreen(
     onStartRootSetupFromSettings: (RootSetupProgressReturnPage) -> Unit,
     onDismissRootSetupProgress: () -> Unit,
     onRequestShizukuPermission: () -> Unit,
-    onRefreshAgentModeAuthorization: () -> Unit,
+    onRefreshAgentModeAuthorization: (Boolean, AgentModeAuthorizationMethod) -> Unit,
     onOpenShizuku: () -> Unit,
     onInstallShizuku: () -> Unit,
     onReplayOnboarding: () -> Unit,
     onReplayFollowUpOnboarding: () -> Unit,
     onStopAgentModeDisplay: () -> Unit,
-    onRefreshAgentModeDisplays: () -> Unit,
+    onRefreshAgentModeDisplays: (AgentModeAuthorizationMethod) -> Unit,
     onOpenWebsite: () -> Unit,
     onOpenPrivacyPolicy: () -> Unit,
     onCheckForUpdates: () -> Unit,
     onForceUpdateCheckForTesting: () -> Unit,
+    onSetDeveloperTermuxReadyOverride: (Boolean) -> Unit,
     onDownloadAndInstallUpdate: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
     // Mutable field values - survive recomposition & config changes
     var systemPromptValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(systemPrompt))
     }
     var tavilyApiKeyValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(tavilyApiKey))
+    }
+    var tavilyBaseUrlValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(tavilyBaseUrl))
     }
     var llmInactivityReconnectTimeoutValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(llmInactivityReconnectTimeoutSeconds.toString()))
@@ -385,6 +396,7 @@ fun SettingsScreen(
             compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
+            normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
             normalizeLlmInactivityReconnectTimeoutSeconds(
                 llmInactivityReconnectTimeoutValue.text.trim().toIntOrNull()
             ),
@@ -410,6 +422,7 @@ fun SettingsScreen(
             compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
+            normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
             normalizeLlmInactivityReconnectTimeoutSeconds(
                 llmInactivityReconnectTimeoutValue.text.trim().toIntOrNull()
             ),
@@ -435,6 +448,7 @@ fun SettingsScreen(
             compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
+            normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
             normalizeLlmInactivityReconnectTimeoutSeconds(
                 llmInactivityReconnectTimeoutValue.text.trim().toIntOrNull()
             ),
@@ -554,7 +568,17 @@ fun SettingsScreen(
                 skillCount = installedSkills.size,
                 mcpServerCount = mcpServers.size,
                 onReplayOnboarding = ::persistAndReplayOnboarding,
-                onNavigate = { currentPage = it.name },
+                onNavigate = { page ->
+                    if (page == SettingsPage.AgentMode && !termuxSetupState.isReady) {
+                        Toast.makeText(
+                            context,
+                            tr(strings, "Complete Termux setup before configuring Agent Mode.", "请先完成 Termux 设置，再配置 Agent 模式。"),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        currentPage = page.name
+                    }
+                },
                 onBack = ::persistAndExit,
             )
 
@@ -679,6 +703,8 @@ fun SettingsScreen(
                 title = strings.webTools,
                 tavilyApiKeyValue = tavilyApiKeyValue,
                 onTavilyApiKeyChanged = { tavilyApiKeyValue = it },
+                tavilyBaseUrlValue = tavilyBaseUrlValue,
+                onTavilyBaseUrlChanged = { tavilyBaseUrlValue = it },
                 onBack = { currentPage = SettingsPage.Hub.name },
             )
 
@@ -778,6 +804,7 @@ fun SettingsScreen(
 
             SettingsPage.AgentMode -> AgentModeSettingsPage(
                 title = strings.agentMode,
+                termuxSetupState = termuxSetupState,
                 agentModeAuthorizationEnabled = agentModeAuthorizationEnabledValue,
                 agentModeAuthorizationMethod = agentModeAuthorizationMethodValue,
                 agentModeAuthorizationState = agentModeAuthorizationState,
@@ -789,6 +816,12 @@ fun SettingsScreen(
                 onRefreshAgentModeAuthorization = onRefreshAgentModeAuthorization,
                 onOpenShizuku = onOpenShizuku,
                 onInstallShizuku = onInstallShizuku,
+                onRequestTermuxPermission = onRequestTermuxPermission,
+                onOpenAppPermissions = onOpenAppPermissions,
+                onOpenTermuxSettings = onOpenTermuxSettings,
+                onOpenTermux = onOpenTermux,
+                onInstallTermux = onInstallTermux,
+                onRefreshTermuxSetup = onRefreshTermuxSetup,
                 onRefreshRootSetup = onRefreshRootSetup,
                 onConfigureWithRoot = { openRootSetupProgress(SettingsPage.AgentMode) },
                 onStopAgentModeDisplay = onStopAgentModeDisplay,
@@ -813,6 +846,8 @@ fun SettingsScreen(
                 onExportAppData = onExportAppData,
                 onExportLogs = onExportLogs,
                 onForceUpdateCheckForTesting = onForceUpdateCheckForTesting,
+                termuxReadyForTesting = developerTermuxReadyOverride ?: termuxSetupState.isReady,
+                onTermuxReadyForTestingChanged = onSetDeveloperTermuxReadyOverride,
                 onBack = { currentPage = SettingsPage.Hub.name },
             )
 
@@ -950,7 +985,12 @@ private fun SettingsHub(
                 SettingsNavRow(
                     icon = LucideIcons.MousePointer2,
                     title = strings.agentMode,
-                    subtitle = strings.agentModeSubtitle,
+                    subtitle = if (termuxReady) {
+                        strings.agentModeSubtitle
+                    } else {
+                        tr(strings, "Requires Termux setup", "Requires Termux setup")
+                    },
+                    enabled = termuxReady,
                     onClick = { onNavigate(SettingsPage.AgentMode) },
                 )
             }
@@ -1626,6 +1666,8 @@ private fun WebToolsPage(
     title: String,
     tavilyApiKeyValue: TextFieldValue,
     onTavilyApiKeyChanged: (TextFieldValue) -> Unit,
+    tavilyBaseUrlValue: TextFieldValue,
+    onTavilyBaseUrlChanged: (TextFieldValue) -> Unit,
     onBack: () -> Unit,
 ) {
     val strings = rememberAetherStrings()
@@ -1641,11 +1683,18 @@ private fun WebToolsPage(
                 value = tavilyApiKeyValue,
                 onValueChange = onTavilyApiKeyChanged,
             )
+            CardDivider()
+            ChatGptTextField(
+                label = tr(strings, "Tavily Base URL", "Tavily Base URL"),
+                value = tavilyBaseUrlValue,
+                onValueChange = onTavilyBaseUrlChanged,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
         }
 
         Spacer(Modifier.height(8.dp))
         Text(
-            text = tr(strings, "fetch_web_url works without extra setup and converts pages to Markdown on-device. tavily_search uses this API key for public web search.", "fetch_web_url works without extra setup and converts pages to Markdown on-device. tavily_search uses this API key for public web search."),
+            text = tr(strings, "fetch_web_url works without extra setup. tavily_search uses this API key and Base URL; leave the URL blank to use the official Tavily endpoint.", "fetch_web_url 无需额外配置。tavily_search 使用这里的 API Key 和 Base URL；留空则使用 Tavily 官方端点。"),
             style = MaterialTheme.typography.bodySmall,
             color = AetherOnSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp),
@@ -2417,6 +2466,7 @@ private fun TermuxSettingsPage(
 @Composable
 private fun AgentModeSettingsPage(
     title: String,
+    termuxSetupState: TermuxSetupState,
     agentModeAuthorizationEnabled: Boolean,
     agentModeAuthorizationMethod: AgentModeAuthorizationMethod,
     agentModeAuthorizationState: AgentModeAuthorizationState,
@@ -2425,13 +2475,19 @@ private fun AgentModeSettingsPage(
     onAgentModeAuthorizationMethodChanged: (AgentModeAuthorizationMethod) -> Unit,
     agentModeDisplayState: AgentModeDisplayState,
     onRequestShizukuPermission: () -> Unit,
-    onRefreshAgentModeAuthorization: () -> Unit,
+    onRefreshAgentModeAuthorization: (Boolean, AgentModeAuthorizationMethod) -> Unit,
     onOpenShizuku: () -> Unit,
     onInstallShizuku: () -> Unit,
+    onRequestTermuxPermission: () -> Unit,
+    onOpenAppPermissions: () -> Unit,
+    onOpenTermuxSettings: () -> Unit,
+    onOpenTermux: () -> Unit,
+    onInstallTermux: () -> Unit,
+    onRefreshTermuxSetup: () -> Unit,
     onRefreshRootSetup: () -> Unit,
     onConfigureWithRoot: () -> Unit,
     onStopAgentModeDisplay: () -> Unit,
-    onRefreshAgentModeDisplays: () -> Unit,
+    onRefreshAgentModeDisplays: (AgentModeAuthorizationMethod) -> Unit,
     onBack: () -> Unit,
 ) {
     val strings = rememberAetherStrings()
@@ -2447,8 +2503,57 @@ private fun AgentModeSettingsPage(
     }
 
     fun refreshAgentModeStatus() {
-        onRefreshAgentModeAuthorization()
-        onRefreshAgentModeDisplays()
+        onRefreshAgentModeAuthorization(
+            agentModeAuthorizationEnabled,
+            agentModeAuthorizationMethod,
+        )
+        onRefreshAgentModeDisplays(agentModeAuthorizationMethod)
+    }
+
+    if (!termuxSetupState.isReady) {
+        LaunchedEffect(Unit) {
+            onRefreshTermuxSetup()
+        }
+        SubPageScaffold(
+            title = title,
+            onBack = onBack,
+            trailingIcon = Icons.Rounded.Refresh,
+            onTrailingAction = onRefreshTermuxSetup,
+        ) {
+            SettingsCardGroup {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = tr(strings, "Agent Mode is unavailable", "Agent Mode is unavailable"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = AetherOnSurface,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = tr(
+                            strings,
+                            "Configure Termux first. Agent Mode uses the Termux bridge for its workspace and screenshot flow, so authorization cannot be enabled until Termux is ready.",
+                            "Configure Termux first. Agent Mode uses the Termux bridge for its workspace and screenshot flow, so authorization cannot be enabled until Termux is ready.",
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AetherOnSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            TermuxSetupNotice(
+                setupState = termuxSetupState,
+                onRequestPermission = onRequestTermuxPermission,
+                onOpenAppPermissions = onOpenAppPermissions,
+                onOpenTermuxSettings = onOpenTermuxSettings,
+                onOpenTermux = onOpenTermux,
+                onInstallTermux = onInstallTermux,
+                onRefresh = onRefreshTermuxSetup,
+                showRefreshAction = true,
+            )
+        }
+        return
     }
     if (showAlreadyConfiguredDialog) {
         RootSetupAlreadyConfiguredDialog(
@@ -2474,7 +2579,7 @@ private fun AgentModeSettingsPage(
         )
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(agentModeAuthorizationEnabled, agentModeAuthorizationMethod) {
         onRefreshRootSetup()
         refreshAgentModeStatus()
         while (true) {
@@ -2962,13 +3067,13 @@ private fun rootSetupProgressBody(
     RootSetupIssue.Running -> tr(
         strings,
         "Aether is requesting su, enabling Termux command access, and preparing Root Agent Mode.",
-        "Aether 正在请求 su、启用 Termux 命令访问，并准备 Root Agent Mode。",
+        "Aether \u6b63\u5728\u8bf7\u6c42 su\u3001\u542f\u7528 Termux \u547d\u4ee4\u8bbf\u95ee\uff0c\u5e76\u51c6\u5907 Root Agent Mode\u3002",
     )
 
     RootSetupIssue.Ready -> tr(
         strings,
         "Termux command access and Root Agent Mode authorization are ready.",
-        "Termux 命令访问和 Root Agent Mode 授权已经就绪。",
+        "Termux \u547d\u4ee4\u8bbf\u95ee\u548c Root Agent Mode \u6388\u6743\u5df2\u7ecf\u5c31\u7eea\u3002",
     )
 
     RootSetupIssue.Available,
@@ -3068,15 +3173,15 @@ private fun rootSetupSettingsBody(
 ): String = when (rootSetupState.issue) {
     RootSetupIssue.Ready -> tr(
         strings,
-        "Root setup can repair Termux command access silently if Termux is killed later.",
-        "如果之后 Termux 被杀掉，Root 配置可以静默修复命令访问。",
+        "Aether can silently wake Termux in the background with Root when Termux is not already running.",
+        "Termux \u672a\u8fd0\u884c\u65f6\uff0cAether \u53ef\u4ee5\u901a\u8fc7 Root \u5728\u540e\u53f0\u9759\u9ed8\u5524\u8d77 Termux\u3002",
     )
 
     RootSetupIssue.Available,
     RootSetupIssue.Running -> tr(
         strings,
-        "Aether can enable Termux external apps and grant the command permission with su.",
-        "Aether 可以通过 su 启用 Termux 外部应用并授予命令权限。",
+        "Aether can use su to enable Termux command access and background wake-up.",
+        "Aether \u53ef\u4ee5\u901a\u8fc7 su \u542f\u7528 Termux \u547d\u4ee4\u8bbf\u95ee\u548c\u540e\u53f0\u5524\u8d77\u80fd\u529b\u3002",
     )
 
     RootSetupIssue.Unavailable,
@@ -3195,6 +3300,8 @@ private fun DeveloperSettingsPage(
     onExportAppData: () -> Unit,
     onExportLogs: () -> Unit,
     onForceUpdateCheckForTesting: () -> Unit,
+    termuxReadyForTesting: Boolean,
+    onTermuxReadyForTestingChanged: (Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
     val strings = rememberAetherStrings()
@@ -3284,6 +3391,35 @@ private fun DeveloperSettingsPage(
                     label = tr(strings, "Force update prompt", "Force update prompt"),
                     onClick = onForceUpdateCheckForTesting,
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        SettingsCardGroup {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = tr(strings, "Termux readiness override", "Termux readiness override"),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = AetherOnSurface,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = tr(
+                        strings,
+                        "Testing switch for Agent Mode gating. On treats Termux as ready; off treats it as not ready.",
+                        "Testing switch for Agent Mode gating. On treats Termux as ready; off treats it as not ready.",
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AetherOnSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                SettingsToggleRow(
+                    title = tr(strings, "Treat Termux as ready", "Treat Termux as ready"),
+                    subtitle = tr(strings, "On = ready. Off = not ready.", "On = ready. Off = not ready."),
+                    checked = termuxReadyForTesting,
+                    onCheckedChange = onTermuxReadyForTestingChanged,
                 )
             }
         }

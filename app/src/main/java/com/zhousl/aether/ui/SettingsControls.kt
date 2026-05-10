@@ -192,8 +192,10 @@ internal fun SettingsNavRow(
     title: String,
     subtitle: String,
     showChevron: Boolean = true,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
+    val contentAlpha = if (enabled) 1f else 0.38f
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -204,7 +206,7 @@ internal fun SettingsNavRow(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = AetherOnSurfaceVariant,
+            tint = AetherOnSurfaceVariant.copy(alpha = contentAlpha),
             modifier = Modifier.size(24.dp),
         )
         Spacer(Modifier.width(14.dp))
@@ -212,12 +214,12 @@ internal fun SettingsNavRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
-                color = AetherOnSurface,
+                color = AetherOnSurface.copy(alpha = contentAlpha),
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = AetherOnSurfaceVariant,
+                color = AetherOnSurfaceVariant.copy(alpha = contentAlpha),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -227,7 +229,7 @@ internal fun SettingsNavRow(
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForwardIos,
                 contentDescription = null,
-                tint = AetherOnSurfaceVariant.copy(alpha = 0.5f),
+                tint = AetherOnSurfaceVariant.copy(alpha = if (enabled) 0.5f else 0.2f),
                 modifier = Modifier.size(14.dp),
             )
         }
