@@ -48,6 +48,8 @@ private const val SystemPackageName = "android"
 class AetherAgentModeShizukuService @Keep constructor(
     private val context: Context,
 ) : IAetherAgentModeService.Stub() {
+    constructor() : this(resolveLegacyUserServiceContext())
+
     private val privilegedContext: Context by lazy { contextForCurrentProcess(context) }
     private val displayManager: DisplayManager by lazy {
         privilegedContext.getSystemService<DisplayManager>()!!
@@ -130,6 +132,16 @@ class AetherAgentModeShizukuService @Keep constructor(
             imageReaders.remove(displayId)?.close()
             displayLocks.remove(displayId)
         }
+    }
+
+    override fun destroy() {
+        displays.keys.toList().forEach { displayId ->
+            runCatching { releaseDisplay(displayId) }
+        }
+        previewSurfaces.clear()
+        imageReaders.clear()
+        displayLocks.clear()
+        System.exit(0)
     }
 
     override fun launchPackage(packageName: String, displayId: Int) {
@@ -537,5 +549,28 @@ class AetherAgentModeShizukuService @Keep constructor(
         val prefixed = KeyEvent.keyCodeFromString("KEYCODE_${normalized.uppercase()}")
         if (prefixed != KeyEvent.KEYCODE_UNKNOWN) return prefixed
         error("Unsupported key code '$rawValue'.")
+    }
+
+    companion object {
+        private fun resolveLegacyUserServiceContext(): Context {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentActivityThread = activityThreadClass
+                .getDeclaredMethod("currentActivityThread")
+                .apply { isAccessible = true }
+                .invoke(null)
+            val currentApplication = activityThreadClass
+                .getDeclaredMethod("currentApplication")
+                .apply { isAccessible = true }
+                .invoke(null) as? Context
+            if (currentApplication != null) return currentApplication
+            if (currentActivityThread != null) {
+                val systemContext = activityThreadClass
+                    .getDeclaredMethod("getSystemContext")
+                    .apply { isAccessible = true }
+                    .invoke(currentActivityThread) as? Context
+                if (systemContext != null) return systemContext
+            }
+            error("Unable to create an Android context for Shizuku Agent Mode service.")
+        }
     }
 }
