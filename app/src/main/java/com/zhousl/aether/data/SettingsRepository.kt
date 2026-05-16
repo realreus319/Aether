@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 
@@ -17,21 +18,26 @@ class SettingsRepository(
     private val context: Context,
 ) {
     val settings: Flow<AppSettings> = context.dataStore.data.map { preferences ->
+        val defaults = AppSettings()
+        val storedWorkspaceMode = AgentWorkspaceMode.fromStorage(preferences[AGENT_WORKSPACE_MODE])
         AppSettings(
             provider = LlmProvider.fromStorage(preferences[PROVIDER]),
             apiKey = preferences[API_KEY].orEmpty(),
-            baseUrl = preferences[BASE_URL] ?: AppSettings().baseUrl,
-            modelId = preferences[MODEL_ID] ?: AppSettings().modelId,
-            systemPrompt = preferences[SYSTEM_PROMPT] ?: AppSettings().systemPrompt,
+            baseUrl = preferences[BASE_URL] ?: defaults.baseUrl,
+            modelId = preferences[MODEL_ID] ?: defaults.modelId,
+            systemPrompt = preferences[SYSTEM_PROMPT] ?: defaults.systemPrompt,
             tavilyApiKey = preferences[TAVILY_API_KEY].orEmpty(),
-            tavilyBaseUrl = normalizeTavilyBaseUrl(
-                preferences[TAVILY_BASE_URL] ?: AppSettings().tavilyBaseUrl
-            ),
+            tavilyBaseUrl = normalizeTavilyBaseUrl(preferences[TAVILY_BASE_URL] ?: defaults.tavilyBaseUrl),
             llmInactivityReconnectTimeoutSeconds = normalizeLlmInactivityReconnectTimeoutSeconds(
                 preferences[LLM_INACTIVITY_RECONNECT_TIMEOUT_SECONDS]
             ),
             keepTasksRunningInBackground = preferences[KEEP_TASKS_RUNNING_IN_BACKGROUND] ?: true,
             notifyOnTaskCompletion = preferences[NOTIFY_ON_TASK_COMPLETION] ?: true,
+            agentWorkspaceMode = if (preferences[WORKSPACE_MODE_INITIALIZED] == true) {
+                storedWorkspaceMode
+            } else {
+                defaults.agentWorkspaceMode
+            },
             termuxSetupCompleted = preferences[TERMUX_SETUP_COMPLETED] ?: false,
             agentModeAuthorizationEnabled = preferences[AGENT_MODE_AUTHORIZATION_ENABLED] ?: false,
             agentModeAuthorizationMethod = AgentModeAuthorizationMethod.fromStorage(
@@ -144,7 +150,10 @@ class SettingsRepository(
                 )
             it[KEEP_TASKS_RUNNING_IN_BACKGROUND] = settings.keepTasksRunningInBackground
             it[NOTIFY_ON_TASK_COMPLETION] = settings.notifyOnTaskCompletion
+            it[AGENT_WORKSPACE_MODE] = settings.agentWorkspaceMode.storageValue
+            it[WORKSPACE_MODE_INITIALIZED] = true
             it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
+            it[TERMUX_SETUP_NOTICE_DISMISSED] = settings.termuxSetupNoticeDismissed
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
             it[AGENT_MODE_AUTHORIZATION_METHOD] = settings.agentModeAuthorizationMethod.storageValue
             it[LANGUAGE] = settings.language.storageValue
@@ -210,7 +219,10 @@ class SettingsRepository(
                 )
             it[KEEP_TASKS_RUNNING_IN_BACKGROUND] = settings.keepTasksRunningInBackground
             it[NOTIFY_ON_TASK_COMPLETION] = settings.notifyOnTaskCompletion
+            it[AGENT_WORKSPACE_MODE] = settings.agentWorkspaceMode.storageValue
+            it[WORKSPACE_MODE_INITIALIZED] = true
             it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
+            it[TERMUX_SETUP_NOTICE_DISMISSED] = settings.termuxSetupNoticeDismissed
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
             it[AGENT_MODE_AUTHORIZATION_METHOD] = settings.agentModeAuthorizationMethod.storageValue
             it[LANGUAGE] = settings.language.storageValue
@@ -264,6 +276,11 @@ class SettingsRepository(
         }
     }
 
+    suspend fun isWorkspaceModeInitialized(): Boolean =
+        context.dataStore.data.map { preferences ->
+            preferences[WORKSPACE_MODE_INITIALIZED] ?: false
+        }.first()
+
     private companion object {
         val PROVIDER = stringPreferencesKey("provider")
         val API_KEY = stringPreferencesKey("api_key")
@@ -278,8 +295,13 @@ class SettingsRepository(
             booleanPreferencesKey("keep_tasks_running_in_background")
         val NOTIFY_ON_TASK_COMPLETION =
             booleanPreferencesKey("notify_on_task_completion")
+        val AGENT_WORKSPACE_MODE = stringPreferencesKey("agent_workspace_mode")
+        val WORKSPACE_MODE_INITIALIZED =
+            booleanPreferencesKey("workspace_mode_initialized")
         val TERMUX_SETUP_COMPLETED =
             booleanPreferencesKey("termux_setup_completed")
+        val TERMUX_SETUP_NOTICE_DISMISSED =
+            booleanPreferencesKey("termux_setup_notice_dismissed")
         val AGENT_MODE_AUTHORIZATION_ENABLED =
             booleanPreferencesKey("agent_mode_authorization_enabled")
         val AGENT_MODE_AUTHORIZATION_METHOD =

@@ -488,7 +488,10 @@ class SessionExecutionManager(
                 activeMcpServerIds = resolvedMcpServerIds,
             )
 
-            val workspaceDirectory = workspaceFileBridge.workspaceDirectory(handle.sessionId)
+            val workspaceDirectory = workspaceFileBridge.workspaceDirectory(
+                sessionId = handle.sessionId,
+                mode = request.settings.agentWorkspaceMode,
+            )
             diagnosticLogger.event(
                 category = "mcp",
                 event = "sync_start",

@@ -98,6 +98,25 @@ enum class AppThemeMode(
     }
 }
 
+enum class AgentWorkspaceMode(
+    val storageValue: String,
+    val displayName: String,
+) {
+    Shared(
+        storageValue = "shared",
+        displayName = "Single Workspace",
+    ),
+    PerSession(
+        storageValue = "per_session",
+        displayName = "Independent Workspaces",
+    );
+
+    companion object {
+        fun fromStorage(value: String?): AgentWorkspaceMode =
+            entries.firstOrNull { it.storageValue == value } ?: Shared
+    }
+}
+
 data class AppSettings(
     val provider: LlmProvider = LlmProvider.OpenAiCompatible,
     val apiKey: String = "",
@@ -109,7 +128,9 @@ data class AppSettings(
     val llmInactivityReconnectTimeoutSeconds: Int = DefaultLlmInactivityReconnectTimeoutSeconds,
     val keepTasksRunningInBackground: Boolean = true,
     val notifyOnTaskCompletion: Boolean = true,
+    val agentWorkspaceMode: AgentWorkspaceMode = AgentWorkspaceMode.Shared,
     val termuxSetupCompleted: Boolean = false,
+    val termuxSetupNoticeDismissed: Boolean = false,
     val agentModeAuthorizationEnabled: Boolean = false,
     val agentModeAuthorizationMethod: AgentModeAuthorizationMethod = AgentModeAuthorizationMethod.Shizuku,
     val language: AppLanguage = defaultAppLanguage(),
