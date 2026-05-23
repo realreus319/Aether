@@ -283,6 +283,7 @@ fun ProviderConfigurationForm(
     existingProviderIds: Set<String>,
     isFetchingModels: Boolean,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
+    onModelEnabledChange: (LlmProviderConfig) -> Unit = {},
     modifier: Modifier = Modifier,
     cardColor: Color = AetherSurfaceHigh,
 ) {
@@ -381,7 +382,10 @@ fun ProviderConfigurationForm(
                 models = state.allModels,
                 enabledModelIds = state.enabledModelIds,
                 isFetchingModels = state.isFetchingModelsLocally || isFetchingModels,
-                onToggleModel = state::setModelEnabled,
+                onToggleModel = { model, enabled ->
+                    state.setModelEnabled(model, enabled)
+                    onModelEnabledChange(state.buildConfig())
+                },
                 onFetchModels = {
                     state.isFetchingModelsLocally = true
                     onFetchModels(state.buildConfig()) { models ->

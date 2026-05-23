@@ -779,6 +779,7 @@ fun SettingsScreen(
                     onUpsertProviderConfig(config)
                     currentPage = SettingsPage.Providers.name
                 },
+                onModelEnabledChange = {},
                 onFetchModels = onFetchModels,
                 onBack = { currentPage = SettingsPage.Providers.name },
             )
@@ -793,6 +794,7 @@ fun SettingsScreen(
                         onUpsertProviderConfig(config)
                         currentPage = SettingsPage.Providers.name
                     },
+                    onModelEnabledChange = onUpsertProviderConfig,
                     onFetchModels = onFetchModels,
                     onBack = { currentPage = SettingsPage.Providers.name },
                 )
@@ -1753,6 +1755,7 @@ private fun ProviderEditPage(
     existingProviderIds: Set<String>,
     isFetchingModels: Boolean,
     onSave: (LlmProviderConfig) -> Unit,
+    onModelEnabledChange: (LlmProviderConfig) -> Unit,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -1775,6 +1778,7 @@ private fun ProviderEditPage(
             existingProviderIds = existingProviderIds,
             isFetchingModels = isFetchingModels,
             onFetchModels = onFetchModels,
+            onModelEnabledChange = onModelEnabledChange,
         )
     }
 }

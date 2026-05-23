@@ -1104,7 +1104,18 @@ private fun PendingAssistantTimeline(
         ""
     }
     if (blocks.isEmpty()) {
-        if (!agentModePreviewVisible && visiblePendingInvocations.isNotEmpty()) {
+        if (agentModePreviewVisible) {
+            AgentModePreviewPanel(
+                displayState = agentModeDisplayState,
+                toolInvocation = pendingAgentModeInvocations.lastOrNull(),
+                overlayText = agentModeOverlayText,
+                workspaceDirectory = workspaceDirectory,
+                allowRootImageRead = allowRootImageRead,
+                onOpenLink = onOpenLink,
+                onAttachSurface = onAttachAgentModePreviewSurface,
+                onDetachSurface = onDetachAgentModePreviewSurface,
+            )
+        } else if (visiblePendingInvocations.isNotEmpty()) {
             val pendingToolsDurationMillis by produceState(
                 initialValue = workDurationMillisForToolInvocations(visiblePendingInvocations),
                 visiblePendingInvocations,
@@ -1136,6 +1147,20 @@ private fun PendingAssistantTimeline(
                 autoExpand = true,
             )
         }
+        return
+    }
+
+    if (agentModePreviewVisible) {
+        AgentModePreviewPanel(
+            displayState = agentModeDisplayState,
+            toolInvocation = (blockAgentModeInvocations + pendingAgentModeInvocations).lastOrNull(),
+            overlayText = agentModeOverlayText,
+            workspaceDirectory = workspaceDirectory,
+            allowRootImageRead = allowRootImageRead,
+            onOpenLink = onOpenLink,
+            onAttachSurface = onAttachAgentModePreviewSurface,
+            onDetachSurface = onDetachAgentModePreviewSurface,
+        )
         return
     }
 

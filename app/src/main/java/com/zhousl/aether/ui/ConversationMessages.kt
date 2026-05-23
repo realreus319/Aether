@@ -844,6 +844,53 @@ private fun AssistantMessageBlock(
     onDelete: () -> Unit,
 ) {
     val strings = rememberAetherStrings()
+    val agentModeFrames = remember(message.toolInvocations) {
+        buildAgentModeReplayFrames(message.toolInvocations)
+    }
+    if (message.reasoningTrace == null && agentModeFrames.isNotEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AgentModeReplayPanel(
+                frames = agentModeFrames,
+                stateKey = "agent-mode-replay-${message.id}",
+                workspaceDirectory = workspaceDirectory,
+                allowRootImageRead = allowRootImageRead,
+                onOpenLink = onOpenLink,
+            )
+            if (message.text.isNotBlank()) {
+                MarkdownContent(
+                    markdown = message.text,
+                    workspaceDirectory = workspaceDirectory,
+                    allowRootImageRead = allowRootImageRead,
+                    onLinkClick = onOpenLink,
+                )
+            }
+            if (showActions) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistantMessageAction(
+                        icon = LucideIcons.Copy,
+                        contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "复制回复" else "Copy reply",
+                        onClick = onCopy,
+                    )
+                    AssistantMessageAction(
+                        icon = LucideIcons.RotateCcw,
+                        contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "重新执行回复" else "Redo reply",
+                        enabled = actionsEnabled,
+                        onClick = onRedo,
+                    )
+                    AssistantMessageAction(
+                        icon = LucideIcons.Trash2,
+                        contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "删除回复" else "Delete reply",
+                        enabled = actionsEnabled,
+                        onClick = onDelete,
+                    )
+                }
+            }
+        }
+        return
+    }
     val shouldFoldWorkBeforeFinalText = message.text.isNotBlank() &&
         (message.reasoningTrace != null ||
             message.thoughtDurationMillis != null ||
@@ -853,9 +900,6 @@ private fun AssistantMessageBlock(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        val agentModeFrames = remember(message.toolInvocations) {
-            buildAgentModeReplayFrames(message.toolInvocations)
-        }
         val workContent: @Composable () -> Unit = {
             AssistantMessageWorkContent(
                 message = message,
@@ -1019,6 +1063,53 @@ fun ConversationAssistantGroupBubble(
     val firstAgentModeMessageIndex = agentModeReplayTimeline.firstFrameMessageIndex
     val finalTextMessageIndex = messages.indexOfLast { message ->
         message.text.isNotBlank() && message.id !in interleavedAgentModeTextIds
+    }
+    if (groupAgentModeFrames.isNotEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AgentModeReplayPanel(
+                frames = groupAgentModeFrames,
+                stateKey = "agent-mode-replay-${messages.first().responseGroupId ?: messages.first().id}",
+                workspaceDirectory = workspaceDirectory,
+                allowRootImageRead = allowRootImageRead,
+                onOpenLink = onOpenLink,
+            )
+            finalTextMessageIndex
+                .takeIf { it >= 0 }
+                ?.let { messages[it] }
+                ?.let { message ->
+                    MarkdownContent(
+                        markdown = message.text,
+                        workspaceDirectory = workspaceDirectory,
+                        allowRootImageRead = allowRootImageRead,
+                        onLinkClick = onOpenLink,
+                    )
+                }
+            if (showActions) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistantMessageAction(
+                    icon = LucideIcons.Copy,
+                    contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "复制回复" else "Copy reply",
+                    onClick = onCopy,
+                )
+                AssistantMessageAction(
+                    icon = LucideIcons.RotateCcw,
+                    contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "重新执行回复" else "Redo reply",
+                    enabled = actionsEnabled,
+                    onClick = onRedo,
+                )
+                AssistantMessageAction(
+                    icon = LucideIcons.Trash2,
+                    contentDescription = if (strings.appLanguage == AppLanguage.SimplifiedChinese) "删除回复" else "Delete reply",
+                    enabled = actionsEnabled,
+                    onClick = onDelete,
+                )
+                }
+            }
+        }
+        return
     }
     val shouldFoldWorkBeforeFinalText = finalTextMessageIndex > 0
     val workMessages = if (shouldFoldWorkBeforeFinalText) {

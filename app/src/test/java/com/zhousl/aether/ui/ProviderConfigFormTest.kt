@@ -39,4 +39,24 @@ class ProviderConfigFormTest {
         assertEquals(listOf("fetched-a", "manual-b"), config.availableModels())
         assertEquals(listOf("manual-b", "fetched-a"), config.enabledModelIds)
     }
+
+    @Test
+    fun buildConfigKeepsModelEnabledChanges() {
+        val state = ProviderFormState.fromConfig(
+            LlmProviderConfig(
+                providerId = "custom",
+                name = "Custom",
+                providerType = LlmProvider.OpenAiCompatible,
+                apiKey = "test-key",
+                baseUrl = "https://api.example.com/v1",
+                modelId = "manual-a",
+                manualModelIds = listOf("manual-a", "manual-b"),
+                enabledModelIds = listOf("manual-a", "manual-b"),
+            )
+        )
+
+        state.setModelEnabled("manual-b", false)
+
+        assertEquals(listOf("manual-a"), state.buildConfig().enabledModelIds)
+    }
 }
