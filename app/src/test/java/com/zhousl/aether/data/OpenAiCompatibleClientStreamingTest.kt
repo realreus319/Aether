@@ -520,4 +520,57 @@ class OpenAiCompatibleClientStreamingTest {
             server.shutdown()
         }
     }
+
+    @Test
+    fun streamChatCompletionIgnoresNullToolCallsOnDeltaAndAccumulatesRealToolCalls() = runBlocking {
+        // Reproduces mimo-v2.5-pro behavior where deltas include
+        // \"tool_calls\": null before the actual tool_calls delta arrives.
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    data: {"choices":[{"delta":{"reasoning_content":"Need to read the file.","tool_calls":null}}]}
+
+                    data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\""}}]}}]}
+
+                    data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"README.md\"}"}}]}}]}
+
+                    data: [DONE]
+
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val settings = AppSettings(
+                provider = LlmProvider.OpenAiCompatible,
+                apiKey = "test-key",
+                baseUrl = server.url("/v1").toString(),
+                modelId = "mimo-v2.5-pro",
+            )
+            val reasoningDeltas = StringBuilder()
+
+            val result = client.streamChatCompletion(
+                settings = settings,
+                systemPrompt = "",
+                conversation = listOf(
+                    JSONObject().apply {
+                        put("role", "user")
+                        put("content", "Read README.md")
+                    }
+                ),
+                onReasoningDelta = { reasoningDeltas.append(it) },
+            ).getOrThrow()
+
+            assertEquals("Need to read the file.", reasoningDeltas.toString())
+            assertEquals(1, result.toolCalls.size)
+            assertEquals("read", result.toolCalls.single().name)
+            assertEquals("""{"path":"README.md"}""", result.toolCalls.single().arguments)
+        } finally {
+            server.shutdown()
+        }
+    }
 }

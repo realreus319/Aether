@@ -413,7 +413,10 @@ class OpenAiCompatibleClient(
         }
 
         val toolCalls = buildList {
-            val toolCallsArray = message.optJSONArray("tool_calls") ?: JSONArray()
+            // Guard against "tool_calls": null which some providers (e.g. mimo)
+            // may include in non-streaming responses.
+            val toolCallsArray = if (message.isNull("tool_calls")) JSONArray()
+                else message.optJSONArray("tool_calls") ?: JSONArray()
             for (index in 0 until toolCallsArray.length()) {
                 val toolCall = toolCallsArray.optJSONObject(index) ?: continue
                 val function = toolCall.optJSONObject("function") ?: continue
@@ -1703,6 +1706,12 @@ private class OpenAiStreamAccumulator(
                 onTextDelta(textDelta)
             }
 
+            // Skip when tool_calls is explicitly null (e.g. mimo-v2.5-pro sends
+            // "tool_calls": null in deltas that carry no tool invocation). Without
+            // this guard, has("tool_calls") returns true even for a null value and
+            // getJSONArray("tool_calls") would throw JSONException, dropping the
+            // entire chunk so that real tool_calls never accumulate.
+            if (delta.isNull("tool_calls")) continue
             val toolCallDeltas = delta.optJSONArray("tool_calls") ?: continue
             for (toolCallIndex in 0 until toolCallDeltas.length()) {
                 val toolCallDelta = toolCallDeltas.optJSONObject(toolCallIndex) ?: continue
