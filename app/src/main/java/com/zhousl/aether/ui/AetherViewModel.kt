@@ -1254,6 +1254,7 @@ class AetherViewModel(
                 activeSkills = session.activeSkills,
                 activeMcpServerIds = session.activeMcpServerIds,
                 agentModeEnabled = session.agentModeEnabled && snapshot.isAgentModeReady(),
+                providerConfigs = snapshot.providerConfigs,
             )
             val updatedSessions = current.sessions.toMutableList().apply {
                 removeAt(sessionIndex)
@@ -2198,6 +2199,7 @@ class AetherViewModel(
                 activeSkills = requestActiveSkills,
                 activeMcpServerIds = requestActiveMcpServerIds,
                 agentModeEnabled = requestAgentModeEnabled,
+                providerConfigs = current.providerConfigs,
             )
 
             current.copy(
@@ -2574,6 +2576,7 @@ class AetherViewModel(
             activeSkills = session.activeSkills,
             activeMcpServerIds = session.activeMcpServerIds,
             agentModeEnabled = session.agentModeEnabled && snapshot.isAgentModeReady(),
+            providerConfigs = snapshot.providerConfigs,
         )
     }
 

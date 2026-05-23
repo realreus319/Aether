@@ -43,6 +43,7 @@ class AetherAgent(
         activeSkills: List<ActiveSkillContext> = emptyList(),
         mcpToolBindings: List<McpToolBinding> = emptyList(),
         agentModeEnabled: Boolean = false,
+        providerConfigs: List<LlmProviderConfig> = emptyList(),
         onToolEvent: suspend (AgentToolEvent) -> Unit = {},
         onAssistantTextDelta: suspend (String) -> Unit = {},
         onAssistantReasoningDelta: suspend (String) -> Unit = {},
@@ -214,6 +215,7 @@ class AetherAgent(
                 activeSkills = resolvedActiveSkills,
                 round = round,
                 parallelToolCallsEnabled = parallelToolCallsEnabled,
+                providerConfigs = providerConfigs,
                 onToolEvent = onToolEvent,
                 onSkillActivated = onSkillActivated,
             )
@@ -278,6 +280,7 @@ class AetherAgent(
         activeSkills: MutableList<ActiveSkillContext>,
         round: Int,
         parallelToolCallsEnabled: Boolean,
+        providerConfigs: List<LlmProviderConfig>,
         onToolEvent: suspend (AgentToolEvent) -> Unit,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): List<ExecutedToolCallResult> {
@@ -296,6 +299,7 @@ class AetherAgent(
                     workspaceDirectory = workspaceDirectory,
                     availableSkills = availableSkills,
                     activeSkills = activeSkills,
+                    providerConfigs = providerConfigs,
                     onSkillActivated = onSkillActivated,
                 )
                 onToolCompleted(result, onToolEvent)
@@ -327,6 +331,7 @@ class AetherAgent(
                             workspaceDirectory = workspaceDirectory,
                             availableSkills = availableSkills,
                             activeSkills = activeSkills,
+                            providerConfigs = providerConfigs,
                             onSkillActivated = onSkillActivated,
                         )
                         onToolCompleted(result, onToolEvent)
@@ -399,6 +404,7 @@ class AetherAgent(
         workspaceDirectory: String,
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
+        providerConfigs: List<LlmProviderConfig>,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): ExecutedToolCallResult {
         val toolCall = indexedToolCall.toolCall
@@ -409,6 +415,7 @@ class AetherAgent(
                 workspaceDirectory = workspaceDirectory,
                 availableSkills = availableSkills,
                 activeSkills = activeSkills,
+                providerConfigs = providerConfigs,
                 onSkillActivated = onSkillActivated,
             )
         } catch (cancellationException: CancellationException) {
@@ -457,6 +464,7 @@ class AetherAgent(
         workspaceDirectory: String,
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
+        providerConfigs: List<LlmProviderConfig>,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): String {
         return when (toolCall.name) {
@@ -516,6 +524,7 @@ class AetherAgent(
                 workspaceDirectory = workspaceDirectory,
                 availableSkills = availableSkills,
                 activeSkills = activeSkills,
+                providerConfigs = providerConfigs,
                 onSkillActivated = onSkillActivated,
             )
             "mcp_list_tools" -> executeMcpListTools(toolCall.arguments)
@@ -526,6 +535,7 @@ class AetherAgent(
             "mcp_get_prompt" -> executeMcpGetPrompt(toolCall.arguments)
             "analyze_image" -> executeAnalyzeImage(
                 settings = settings,
+                providerConfigs = providerConfigs,
                 argumentsJson = injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory),
             )
             "agent_display" -> agentModeController.execute(
@@ -598,6 +608,7 @@ class AetherAgent(
         workspaceDirectory: String,
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
+        providerConfigs: List<LlmProviderConfig>,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): String {
         val arguments = runCatching { JSONObject(argumentsJson) }.getOrNull()
@@ -648,6 +659,7 @@ class AetherAgent(
                             workspaceDirectory = workspaceDirectory,
                             availableSkills = availableSkills,
                             activeSkills = activeSkills,
+                            providerConfigs = providerConfigs,
                             onSkillActivated = onSkillActivated,
                         )
                     }
@@ -663,6 +675,7 @@ class AetherAgent(
                     workspaceDirectory = workspaceDirectory,
                     availableSkills = availableSkills,
                     activeSkills = activeSkills,
+                    providerConfigs = providerConfigs,
                     onSkillActivated = onSkillActivated,
                 )
             }
@@ -712,6 +725,7 @@ class AetherAgent(
         workspaceDirectory: String,
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
+        providerConfigs: List<LlmProviderConfig>,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): JSONObject {
         val rawOutput = try {
@@ -725,6 +739,7 @@ class AetherAgent(
                 workspaceDirectory = workspaceDirectory,
                 availableSkills = availableSkills,
                 activeSkills = activeSkills,
+                providerConfigs = providerConfigs,
                 onSkillActivated = onSkillActivated,
             )
         } catch (cancellationException: CancellationException) {
@@ -1225,6 +1240,7 @@ class AetherAgent(
 
     private suspend fun executeAnalyzeImage(
         settings: AppSettings,
+        providerConfigs: List<LlmProviderConfig>,
         argumentsJson: String,
     ): String {
         val arguments = runCatching { JSONObject(argumentsJson) }.getOrNull()
@@ -1239,6 +1255,15 @@ class AetherAgent(
         val prompt = arguments.optString("prompt").trim().ifBlank {
             "Describe the image and answer any relevant details needed for the task."
         }
+        val preferredModelKey = arguments.optString("model_key").trim()
+            .ifBlank { arguments.optString("modelKey").trim() }
+            .ifBlank { arguments.optString("model").trim() }
+        val analysisSettings = resolveModelSettings(
+            baseSettings = settings,
+            providerConfigs = providerConfigs,
+            preferredModelKey = preferredModelKey,
+            fallbackModelKey = resolveDefaultChatModelKey(settings, providerConfigs),
+        )
 
         if (path.isBlank()) {
             return JSONObject().apply {
@@ -1272,10 +1297,10 @@ class AetherAgent(
         }
 
         val response = client.createChatCompletion(
-            settings = settings,
+            settings = analysisSettings,
             systemPrompt = "You are an image analysis helper for an Android coding agent. Answer only with observations and conclusions grounded in the image and the prompt.",
             conversation = client.buildConversation(
-                settings = settings,
+                settings = analysisSettings,
                 messages = listOf(
                     LlmMessage(
                         role = "user",
@@ -1299,6 +1324,7 @@ class AetherAgent(
             put("ok", true)
             put("path", payload.absolutePath)
             put("prompt", prompt)
+            put("model", analysisSettings.modelId)
             put("analysis", response.assistantText)
             put("stdout", response.assistantText)
         }.toString()
@@ -2114,6 +2140,9 @@ class AetherAgent(
         properties = JSONObject().apply {
             put("path", stringProperty("The image file path to inspect. Relative paths resolve from the current workspace."))
             put("prompt", stringProperty("Optional question or instruction for what to inspect in the image."))
+            put("model", stringProperty("Optional model id or model option key to use. Omit this to use the current main conversation model."))
+            put("model_key", stringProperty("Optional exact model option key to use. Alias of model."))
+            put("modelKey", stringProperty("Alias of model_key."))
             put(
                 "workingDirectory",
                 stringProperty("Optional working directory used to resolve relative paths."),
