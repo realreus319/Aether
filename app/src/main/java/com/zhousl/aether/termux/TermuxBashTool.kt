@@ -117,7 +117,10 @@ class TermuxBashTool(
         }
     }
 
-    suspend fun execute(argumentsJson: String): String = withContext(Dispatchers.IO) {
+    suspend fun execute(
+        argumentsJson: String,
+        onProgress: (suspend (String) -> Unit)? = null,
+    ): String = withContext(Dispatchers.IO) {
         val arguments = runCatching { JSONObject(argumentsJson) }.getOrElse {
             return@withContext buildInvalidArgumentsResult("Arguments were not valid JSON.")
         }
@@ -164,6 +167,7 @@ class TermuxBashTool(
                 initialResult = initialResult,
                 runId = runId,
                 startedAtMillis = startedAtMillis,
+                onProgress = onProgress,
             )
         } catch (cancellationException: CancellationException) {
             runCatching { killExecutionByRunId(runId) }
@@ -310,8 +314,10 @@ class TermuxBashTool(
         initialResult: String,
         runId: String,
         startedAtMillis: Long,
+        onProgress: (suspend (String) -> Unit)? = null,
     ): String {
         var currentResult = initialResult
+        emitManagedCommandProgress(currentResult, onProgress)
         while (true) {
             val json = runCatching { JSONObject(currentResult) }.getOrNull()
                 ?: return currentResult
@@ -349,7 +355,18 @@ class TermuxBashTool(
                 ),
                 runIdFallback = runId,
             )
+            emitManagedCommandProgress(currentResult, onProgress)
         }
+    }
+
+    private suspend fun emitManagedCommandProgress(
+        result: String,
+        onProgress: (suspend (String) -> Unit)?,
+    ) {
+        if (onProgress == null) return
+        val json = runCatching { JSONObject(result) }.getOrNull() ?: return
+        if (!json.optBoolean("running")) return
+        onProgress(result)
     }
 
     private fun isTransientManagedLaunchResult(

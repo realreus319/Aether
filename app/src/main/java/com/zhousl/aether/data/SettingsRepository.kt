@@ -41,6 +41,7 @@ class SettingsRepository(
             },
             termuxSetupCompleted = preferences[TERMUX_SETUP_COMPLETED] ?: false,
             termuxSetupNoticeDismissed = preferences[TERMUX_SETUP_NOTICE_DISMISSED] ?: false,
+            termuxLiveOutputEnabled = preferences[TERMUX_LIVE_OUTPUT_ENABLED] ?: true,
             termuxEnvironmentVariables = parseTermuxEnvironmentVariables(
                 preferences[TERMUX_ENVIRONMENT_VARIABLES].orEmpty()
             ),
@@ -160,6 +161,7 @@ class SettingsRepository(
             it[WORKSPACE_MODE_INITIALIZED] = true
             it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
             it[TERMUX_SETUP_NOTICE_DISMISSED] = settings.termuxSetupNoticeDismissed
+            it[TERMUX_LIVE_OUTPUT_ENABLED] = settings.termuxLiveOutputEnabled
             it[TERMUX_ENVIRONMENT_VARIABLES] =
                 serializeTermuxEnvironmentVariables(settings.termuxEnvironmentVariables)
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
@@ -232,6 +234,7 @@ class SettingsRepository(
             it[WORKSPACE_MODE_INITIALIZED] = true
             it[TERMUX_SETUP_COMPLETED] = settings.termuxSetupCompleted
             it[TERMUX_SETUP_NOTICE_DISMISSED] = settings.termuxSetupNoticeDismissed
+            it[TERMUX_LIVE_OUTPUT_ENABLED] = settings.termuxLiveOutputEnabled
             it[TERMUX_ENVIRONMENT_VARIABLES] =
                 serializeTermuxEnvironmentVariables(settings.termuxEnvironmentVariables)
             it[AGENT_MODE_AUTHORIZATION_ENABLED] = settings.agentModeAuthorizationEnabled
@@ -314,6 +317,8 @@ class SettingsRepository(
             booleanPreferencesKey("termux_setup_completed")
         val TERMUX_SETUP_NOTICE_DISMISSED =
             booleanPreferencesKey("termux_setup_notice_dismissed")
+        val TERMUX_LIVE_OUTPUT_ENABLED =
+            booleanPreferencesKey("termux_live_output_enabled")
         val TERMUX_ENVIRONMENT_VARIABLES =
             stringPreferencesKey("termux_environment_variables")
         val AGENT_MODE_AUTHORIZATION_ENABLED =

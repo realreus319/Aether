@@ -310,6 +310,7 @@ fun SettingsScreen(
     keepTasksRunningInBackground: Boolean,
     notifyOnTaskCompletion: Boolean,
     agentWorkspaceMode: AgentWorkspaceMode,
+    termuxLiveOutputEnabled: Boolean,
     termuxEnvironmentVariables: List<TermuxEnvironmentVariable>,
     agentModeAuthorizationEnabled: Boolean,
     agentModeAuthorizationMethod: AgentModeAuthorizationMethod,
@@ -343,6 +344,7 @@ fun SettingsScreen(
         Boolean,
         Boolean,
         AgentWorkspaceMode,
+        Boolean,
         List<TermuxEnvironmentVariable>,
         Boolean,
         AgentModeAuthorizationMethod,
@@ -423,6 +425,9 @@ fun SettingsScreen(
     var agentWorkspaceModeValue by rememberSaveable {
         mutableStateOf(agentWorkspaceMode)
     }
+    var termuxLiveOutputEnabledValue by rememberSaveable {
+        mutableStateOf(termuxLiveOutputEnabled)
+    }
     var termuxEnvironmentVariablesValue by rememberSaveable {
         mutableStateOf(termuxEnvironmentVariables)
     }
@@ -478,6 +483,7 @@ fun SettingsScreen(
             keepTasksRunningInBackgroundValue,
             notifyOnTaskCompletionValue,
             agentWorkspaceModeValue,
+            termuxLiveOutputEnabledValue,
             termuxEnvironmentVariablesValue,
             agentModeAuthorizationEnabledValue,
             agentModeAuthorizationMethodValue,
@@ -507,6 +513,7 @@ fun SettingsScreen(
             keepTasksRunningInBackgroundValue,
             notifyOnTaskCompletionValue,
             agentWorkspaceModeValue,
+            termuxLiveOutputEnabledValue,
             termuxEnvironmentVariablesValue,
             agentModeAuthorizationEnabledValue,
             agentModeAuthorizationMethodValue,
@@ -536,6 +543,7 @@ fun SettingsScreen(
             keepTasksRunningInBackgroundValue,
             notifyOnTaskCompletionValue,
             agentWorkspaceModeValue,
+            termuxLiveOutputEnabledValue,
             termuxEnvironmentVariablesValue,
             agentModeAuthorizationEnabledValue,
             agentModeAuthorizationMethodValue,
@@ -931,8 +939,10 @@ fun SettingsScreen(
                 termuxSetupState = termuxSetupState,
                 rootSetupState = rootSetupState,
                 selectedWorkspaceMode = agentWorkspaceModeValue,
+                liveOutputEnabled = termuxLiveOutputEnabledValue,
                 environmentVariables = termuxEnvironmentVariablesValue,
                 onWorkspaceModeSelected = { agentWorkspaceModeValue = it },
+                onLiveOutputEnabledChanged = { termuxLiveOutputEnabledValue = it },
                 onEnvironmentVariablesChanged = { termuxEnvironmentVariablesValue = it },
                 onRequestTermuxPermission = onRequestTermuxPermission,
                 onOpenAppPermissions = onOpenAppPermissions,
@@ -3001,8 +3011,10 @@ private fun TermuxSettingsPage(
     termuxSetupState: TermuxSetupState,
     rootSetupState: RootSetupState,
     selectedWorkspaceMode: AgentWorkspaceMode,
+    liveOutputEnabled: Boolean,
     environmentVariables: List<TermuxEnvironmentVariable>,
     onWorkspaceModeSelected: (AgentWorkspaceMode) -> Unit,
+    onLiveOutputEnabledChanged: (Boolean) -> Unit,
     onEnvironmentVariablesChanged: (List<TermuxEnvironmentVariable>) -> Unit,
     onRequestTermuxPermission: () -> Unit,
     onOpenAppPermissions: () -> Unit,
@@ -3072,6 +3084,14 @@ private fun TermuxSettingsPage(
 
         Spacer(Modifier.height(16.dp))
 
+        TermuxLiveOutputSettingsSection(
+            strings = strings,
+            liveOutputEnabled = liveOutputEnabled,
+            onLiveOutputEnabledChanged = onLiveOutputEnabledChanged,
+        )
+
+        Spacer(Modifier.height(16.dp))
+
         TermuxEnvironmentVariablesSection(
             variables = environmentVariables,
             onVariablesChanged = onEnvironmentVariablesChanged,
@@ -3112,6 +3132,28 @@ private fun TermuxSettingsPage(
                 onInstallTermux = onInstallTermux,
                 onRefresh = onRefreshTermuxSetup,
                 showRefreshAction = false,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TermuxLiveOutputSettingsSection(
+    strings: AetherStrings,
+    liveOutputEnabled: Boolean,
+    onLiveOutputEnabledChanged: (Boolean) -> Unit,
+) {
+    SettingsCardGroup {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SettingsToggleRow(
+                title = tr(strings, "Live command output", "实时命令输出"),
+                subtitle = tr(
+                    strings,
+                    "Show running bash stdout and stderr snapshots in the tool card while Termux commands are still active.",
+                    "在 Termux 命令仍在运行时，在工具卡片中显示 bash stdout 和 stderr 快照。",
+                ),
+                checked = liveOutputEnabled,
+                onCheckedChange = onLiveOutputEnabledChanged,
             )
         }
     }

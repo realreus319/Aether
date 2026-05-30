@@ -133,6 +133,7 @@ data class AppSettings(
     val agentWorkspaceMode: AgentWorkspaceMode = AgentWorkspaceMode.Shared,
     val termuxSetupCompleted: Boolean = false,
     val termuxSetupNoticeDismissed: Boolean = false,
+    val termuxLiveOutputEnabled: Boolean = true,
     val termuxEnvironmentVariables: List<TermuxEnvironmentVariable> = emptyList(),
     val agentModeAuthorizationEnabled: Boolean = false,
     val agentModeAuthorizationMethod: AgentModeAuthorizationMethod = AgentModeAuthorizationMethod.Shizuku,

@@ -1409,6 +1409,7 @@ class AetherViewModel(
         keepTasksRunningInBackground: Boolean,
         notifyOnTaskCompletion: Boolean,
         agentWorkspaceMode: AgentWorkspaceMode,
+        termuxLiveOutputEnabled: Boolean,
         termuxEnvironmentVariables: List<TermuxEnvironmentVariable>,
         agentModeAuthorizationEnabled: Boolean,
         agentModeAuthorizationMethod: AgentModeAuthorizationMethod,
@@ -1456,6 +1457,7 @@ class AetherViewModel(
                     keepTasksRunningInBackground = keepTasksRunningInBackground,
                     notifyOnTaskCompletion = notifyOnTaskCompletion,
                     agentWorkspaceMode = agentWorkspaceMode,
+                    termuxLiveOutputEnabled = termuxLiveOutputEnabled,
                     termuxEnvironmentVariables = normalizeTermuxEnvironmentVariables(termuxEnvironmentVariables),
                     agentModeAuthorizationEnabled = agentModeAuthorizationEnabled,
                     agentModeAuthorizationMethod = agentModeAuthorizationMethod,
@@ -3926,6 +3928,7 @@ class AetherViewModel(
                 }
             },
         )
+        put("termuxLiveOutputEnabled", termuxLiveOutputEnabled)
         put("agentModeAuthorizationEnabled", agentModeAuthorizationEnabled)
         put("agentModeAuthorizationMethod", agentModeAuthorizationMethod.storageValue)
         put("language", language.storageValue)
@@ -3985,6 +3988,10 @@ class AetherViewModel(
             ),
             termuxEnvironmentVariables = parseImportedTermuxEnvironmentVariables(
                 json.optJSONArray("termuxEnvironmentVariables")
+            ),
+            termuxLiveOutputEnabled = json.optBoolean(
+                "termuxLiveOutputEnabled",
+                defaults.termuxLiveOutputEnabled,
             ),
             agentModeAuthorizationEnabled = json.optBoolean(
                 "agentModeAuthorizationEnabled",

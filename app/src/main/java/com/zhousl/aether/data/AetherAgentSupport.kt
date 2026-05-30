@@ -64,6 +64,7 @@ data class AgentToolEvent(
     val name: String,
     val argumentsJson: String,
     val outputJson: String? = null,
+    val isRunning: Boolean? = null,
 )
 
 data class StreamingStatus(

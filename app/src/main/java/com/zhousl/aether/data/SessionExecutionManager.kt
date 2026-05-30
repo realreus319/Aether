@@ -524,6 +524,15 @@ class SessionExecutionManager(
                 ),
             )
             val reasoningTraceToolRoutingEnabled = request.settings.supportsVisibleReasoningTrace()
+            val emitToolEvent: suspend (AgentToolEvent) -> Unit = { event ->
+                if (!handle.pauseRequested) {
+                    handleToolEvent(
+                        handle = handle,
+                        event = event,
+                        reasoningTraceToolRoutingEnabled = reasoningTraceToolRoutingEnabled,
+                    )
+                }
+            }
 
             val result = agent.runTurn(
                 settings = request.settings,
@@ -534,72 +543,8 @@ class SessionExecutionManager(
                 mcpToolBindings = mcpClientManager.toolBindings(),
                 agentModeEnabled = request.agentModeEnabled,
                 providerConfigs = request.providerConfigs,
-                onToolEvent = { event ->
-                    if (handle.pauseRequested) return@runTurn
-                    val nowUptime = SystemClock.uptimeMillis()
-                    val nowMillis = System.currentTimeMillis()
-                    var invocation = ChatToolInvocation(
-                        id = event.id,
-                        toolName = event.name,
-                        argumentsJson = event.argumentsJson,
-                        outputJson = event.outputJson.orEmpty(),
-                        isRunning = event.outputJson == null,
-                        startedAtUptimeMillis = nowUptime,
-                        completedAtUptimeMillis = if (event.outputJson == null) null else nowUptime,
-                        startedAtMillis = nowMillis,
-                        completedAtMillis = if (event.outputJson == null) null else nowMillis,
-                    )
-                    if (event.outputJson == null) {
-                        flushActiveReasoningSummary(
-                            handle = handle,
-                        )
-                        handle.finishDirectReasoningSummaryChunk()
-                    }
-                    val currentBlocks = _executionStates.value[handle.sessionId]?.pendingResponseBlocks.orEmpty()
-                    val shouldRouteToolIntoReasoning =
-                        handle.activeReasoningBlockId != null ||
-                            reasoningTraceToolRoutingEnabled ||
-                            currentBlocks.any { it is AssistantResponseBlock.Reasoning }
-                    var reasoningBlockId = handle.activeReasoningBlockId
-                    if (reasoningBlockId == null && shouldRouteToolIntoReasoning) {
-                        reasoningBlockId = handle.nextPendingBlockId("pending-reasoning")
-                        handle.startReasoningBlock(reasoningBlockId, nowMillis)
-                    }
-                    if (shouldRouteToolIntoReasoning && invocation.timelineOrder <= 0L) {
-                        invocation = invocation.copy(timelineOrder = handle.nextReasoningTimelineOrder())
-                    }
-                    updateExecutionState(handle.sessionId) { current ->
-                        val targetReasoningBlockId = reasoningBlockId
-                        val pendingToolInvocations = upsertToolInvocation(
-                            current.pendingToolInvocations,
-                            invocation,
-                        )
-                        val blocksWithReasoningTrace = if (
-                            targetReasoningBlockId != null &&
-                            current.pendingResponseBlocks.none { it is AssistantResponseBlock.Reasoning && it.id == targetReasoningBlockId }
-                        ) {
-                            current.pendingResponseBlocks + AssistantResponseBlock.Reasoning(
-                                id = targetReasoningBlockId,
-                                trace = ReasoningTrace(
-                                    id = targetReasoningBlockId,
-                                    latestStatusText = formatReasoningToolStatus(invocation),
-                                    startedAtMillis = nowMillis,
-                                ),
-                            )
-                        } else {
-                            current.pendingResponseBlocks
-                        }
-                        val pendingResponseBlocks = upsertAssistantResponseToolInvocation(
-                            blocks = blocksWithReasoningTrace,
-                            toolInvocation = invocation,
-                            reasoningBlockId = targetReasoningBlockId,
-                        ) { handle.nextPendingBlockId("pending-tools") }
-                        current.copy(
-                            pendingToolInvocations = pendingToolInvocations,
-                            pendingResponseBlocks = pendingResponseBlocks,
-                        )
-                    }
-                },
+                onToolEvent = emitToolEvent,
+                onToolProgress = if (request.settings.termuxLiveOutputEnabled) emitToolEvent else null,
                 onAssistantReasoningDelta = { delta ->
                     if (handle.pauseRequested) return@runTurn
                     if (delta.isEmpty()) return@runTurn
@@ -934,6 +879,88 @@ class SessionExecutionManager(
             inputMessageCount = inputMessageCount,
             userMessageCount = userMessageCount,
         )
+    }
+
+    private suspend fun handleToolEvent(
+        handle: SessionExecutionHandle,
+        event: AgentToolEvent,
+        reasoningTraceToolRoutingEnabled: Boolean,
+    ) {
+        val nowUptime = SystemClock.uptimeMillis()
+        val nowMillis = System.currentTimeMillis()
+        val existingInvocation = _executionStates.value[handle.sessionId]
+            ?.pendingToolInvocations
+            ?.firstOrNull { it.id == event.id }
+        var invocation = ChatToolInvocation(
+            id = event.id,
+            toolName = event.name,
+            argumentsJson = event.argumentsJson,
+            outputJson = event.outputJson.orEmpty(),
+            isRunning = event.isRunning ?: (event.outputJson == null),
+            startedAtUptimeMillis = existingInvocation?.startedAtUptimeMillis ?: nowUptime,
+            completedAtUptimeMillis = if (event.isRunning == true || event.outputJson == null) {
+                null
+            } else {
+                existingInvocation?.completedAtUptimeMillis ?: nowUptime
+            },
+            startedAtMillis = existingInvocation?.startedAtMillis ?: nowMillis,
+            completedAtMillis = if (event.isRunning == true || event.outputJson == null) {
+                null
+            } else {
+                existingInvocation?.completedAtMillis ?: nowMillis
+            },
+            timelineOrder = existingInvocation?.timelineOrder ?: 0L,
+        )
+        if (event.outputJson == null) {
+            flushActiveReasoningSummary(
+                handle = handle,
+            )
+            handle.finishDirectReasoningSummaryChunk()
+        }
+        val currentBlocks = _executionStates.value[handle.sessionId]?.pendingResponseBlocks.orEmpty()
+        val shouldRouteToolIntoReasoning =
+            handle.activeReasoningBlockId != null ||
+                reasoningTraceToolRoutingEnabled ||
+                currentBlocks.any { it is AssistantResponseBlock.Reasoning }
+        var reasoningBlockId = handle.activeReasoningBlockId
+        if (reasoningBlockId == null && shouldRouteToolIntoReasoning) {
+            reasoningBlockId = handle.nextPendingBlockId("pending-reasoning")
+            handle.startReasoningBlock(reasoningBlockId, nowMillis)
+        }
+        if (shouldRouteToolIntoReasoning && invocation.timelineOrder <= 0L) {
+            invocation = invocation.copy(timelineOrder = handle.nextReasoningTimelineOrder())
+        }
+        updateExecutionState(handle.sessionId) { current ->
+            val targetReasoningBlockId = reasoningBlockId
+            val pendingToolInvocations = upsertToolInvocation(
+                current.pendingToolInvocations,
+                invocation,
+            )
+            val blocksWithReasoningTrace = if (
+                targetReasoningBlockId != null &&
+                current.pendingResponseBlocks.none { it is AssistantResponseBlock.Reasoning && it.id == targetReasoningBlockId }
+            ) {
+                current.pendingResponseBlocks + AssistantResponseBlock.Reasoning(
+                    id = targetReasoningBlockId,
+                    trace = ReasoningTrace(
+                        id = targetReasoningBlockId,
+                        latestStatusText = formatReasoningToolStatus(invocation),
+                        startedAtMillis = nowMillis,
+                    ),
+                )
+            } else {
+                current.pendingResponseBlocks
+            }
+            val pendingResponseBlocks = upsertAssistantResponseToolInvocation(
+                blocks = blocksWithReasoningTrace,
+                toolInvocation = invocation,
+                reasoningBlockId = targetReasoningBlockId,
+            ) { handle.nextPendingBlockId("pending-tools") }
+            current.copy(
+                pendingToolInvocations = pendingToolInvocations,
+                pendingResponseBlocks = pendingResponseBlocks,
+            )
+        }
     }
 
     private fun assistantMessagesForBlocks(

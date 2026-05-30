@@ -54,6 +54,7 @@ class AetherAgent(
         agentModeEnabled: Boolean = false,
         providerConfigs: List<LlmProviderConfig> = emptyList(),
         onToolEvent: suspend (AgentToolEvent) -> Unit = {},
+        onToolProgress: (suspend (AgentToolEvent) -> Unit)? = null,
         onAssistantTextDelta: suspend (String) -> Unit = {},
         onAssistantReasoningDelta: suspend (String) -> Unit = {},
         onAssistantReasoningSummaryDelta: suspend (String) -> Unit = {},
@@ -230,6 +231,7 @@ class AetherAgent(
                 parallelToolCallsEnabled = parallelToolCallsEnabled,
                 providerConfigs = providerConfigs,
                 onToolEvent = onToolEvent,
+                onToolProgress = onToolProgress,
                 onSkillActivated = onSkillActivated,
             )
             toolResults.forEach { result ->
@@ -298,6 +300,7 @@ class AetherAgent(
         parallelToolCallsEnabled: Boolean,
         providerConfigs: List<LlmProviderConfig>,
         onToolEvent: suspend (AgentToolEvent) -> Unit,
+        onToolProgress: (suspend (AgentToolEvent) -> Unit)?,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): List<ExecutedToolCallResult> {
         val results = mutableListOf<ExecutedToolCallResult>()
@@ -316,6 +319,7 @@ class AetherAgent(
                     availableSkills = availableSkills,
                     activeSkills = activeSkills,
                     providerConfigs = providerConfigs,
+                    onToolProgress = onToolProgress,
                     onSkillActivated = onSkillActivated,
                 )
                 onToolCompleted(result, onToolEvent)
@@ -348,6 +352,7 @@ class AetherAgent(
                             availableSkills = availableSkills,
                             activeSkills = activeSkills,
                             providerConfigs = providerConfigs,
+                            onToolProgress = onToolProgress,
                             onSkillActivated = onSkillActivated,
                         )
                         onToolCompleted(result, onToolEvent)
@@ -421,6 +426,7 @@ class AetherAgent(
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
         providerConfigs: List<LlmProviderConfig>,
+        onToolProgress: (suspend (AgentToolEvent) -> Unit)?,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): ExecutedToolCallResult {
         val toolCall = indexedToolCall.toolCall
@@ -432,6 +438,19 @@ class AetherAgent(
                 availableSkills = availableSkills,
                 activeSkills = activeSkills,
                 providerConfigs = providerConfigs,
+                onToolProgress = onToolProgress?.let { callback ->
+                    { output ->
+                        callback(
+                            AgentToolEvent(
+                                id = indexedToolCall.id,
+                                name = toolCall.name,
+                                argumentsJson = toolCall.arguments,
+                                outputJson = sanitizeToolOutputForConversation(toolCall.name, output),
+                                isRunning = true,
+                            )
+                        )
+                    }
+                },
                 onSkillActivated = onSkillActivated,
             )
         } catch (cancellationException: CancellationException) {
@@ -481,6 +500,7 @@ class AetherAgent(
         availableSkills: List<InstalledSkill>,
         activeSkills: MutableList<ActiveSkillContext>,
         providerConfigs: List<LlmProviderConfig>,
+        onToolProgress: (suspend (String) -> Unit)? = null,
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): String {
         return when (toolCall.name) {
@@ -503,7 +523,8 @@ class AetherAgent(
                 injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
             )
             "bash" -> bashTool.execute(
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
+                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory),
+                onProgress = onToolProgress,
             )
             "fetch_bash_output" -> bashTool.fetchExecution(toolCall.arguments)
             "kill_bash" -> bashTool.killExecution(toolCall.arguments)
