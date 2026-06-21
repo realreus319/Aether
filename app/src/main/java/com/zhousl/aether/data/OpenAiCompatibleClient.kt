@@ -64,45 +64,50 @@ class OpenAiCompatibleClient(
             ),
         )
         return try {
-            val request = when (settings.provider) {
-                LlmProvider.OpenAiResponses -> buildOpenAiResponsesRequest(
+            val responsePayload = when (settings.provider) {
+                LlmProvider.VertexExpress -> executeVertexGenerateContentRequest(
                     settings = settings,
                     systemPrompt = systemPrompt,
                     conversation = conversation,
                     tools = tools,
                     toolChoice = toolChoice,
-                    parallelToolCalls = parallelToolCalls,
-                    disableReasoning = disableReasoning,
-            )
+                )
 
-                LlmProvider.OpenAiCompatible -> buildOpenAiRequest(
-                    settings = settings,
-                    systemPrompt = systemPrompt,
-                    conversation = conversation,
-                    tools = tools,
-                    toolChoice = toolChoice,
-                    parallelToolCalls = parallelToolCalls,
-                    disableReasoning = disableReasoning,
-            )
+                else -> {
+                    val request = when (settings.provider) {
+                        LlmProvider.OpenAiResponses -> buildOpenAiResponsesRequest(
+                            settings = settings,
+                            systemPrompt = systemPrompt,
+                            conversation = conversation,
+                            tools = tools,
+                            toolChoice = toolChoice,
+                            parallelToolCalls = parallelToolCalls,
+                            disableReasoning = disableReasoning,
+                        )
 
-                LlmProvider.VertexExpress -> buildVertexRequest(
-                    settings = settings,
-                    systemPrompt = systemPrompt,
-                    conversation = conversation,
-                    tools = tools,
-                    toolChoice = toolChoice,
-            )
+                        LlmProvider.OpenAiCompatible -> buildOpenAiRequest(
+                            settings = settings,
+                            systemPrompt = systemPrompt,
+                            conversation = conversation,
+                            tools = tools,
+                            toolChoice = toolChoice,
+                            parallelToolCalls = parallelToolCalls,
+                            disableReasoning = disableReasoning,
+                        )
 
-                LlmProvider.AnthropicMessages -> buildAnthropicMessagesRequest(
-                    settings = settings,
-                    systemPrompt = systemPrompt,
-                    conversation = conversation,
-                    tools = tools,
-                    toolChoice = toolChoice,
-            )
+                        LlmProvider.VertexExpress -> error("Handled above.")
+
+                        LlmProvider.AnthropicMessages -> buildAnthropicMessagesRequest(
+                            settings = settings,
+                            systemPrompt = systemPrompt,
+                            conversation = conversation,
+                            tools = tools,
+                            toolChoice = toolChoice,
+                        )
+                    }
+                    executeRequest(request)
+                }
             }
-
-            val responsePayload = executeRequest(request)
             val json = parseJsonObject(responsePayload.bodyString)
 
             if (!responsePayload.isSuccessful) {
@@ -838,22 +843,61 @@ class OpenAiCompatibleClient(
         onTextDelta: suspend (String) -> Unit,
         onStreamActivity: suspend () -> Unit,
     ): ChatCompletionResult {
-        val accumulator = VertexStreamAccumulator(onTextDelta)
-        return executeStreamingRequest(
-            request = buildVertexRequest(
+        val responsePayload = executeVertexGenerateContentRequest(
+            settings = settings,
+            systemPrompt = systemPrompt,
+            conversation = conversation,
+            tools = tools,
+            toolChoice = toolChoice,
+        )
+        onStreamActivity()
+        val json = parseJsonObject(responsePayload.bodyString)
+
+        if (!responsePayload.isSuccessful) {
+            val errorMessage = extractLlmErrorMessage(json, responsePayload)
+            throw buildLlmRequestException(responsePayload, errorMessage)
+        }
+
+        if (json == null) {
+            error(buildUnexpectedResponseMessage(responsePayload))
+        }
+
+        return parseVertexGenerateContent(json).also { result ->
+            if (result.assistantText.isNotEmpty()) {
+                onTextDelta(result.assistantText)
+            }
+        }
+    }
+
+    private suspend fun executeVertexGenerateContentRequest(
+        settings: AppSettings,
+        systemPrompt: String,
+        conversation: List<JSONObject>,
+        tools: List<JSONObject>,
+        toolChoice: String?,
+    ): HttpResponsePayload {
+        val responsePayload = executeRequest(
+            buildVertexRequest(
                 settings = settings,
                 systemPrompt = systemPrompt,
                 conversation = conversation,
                 tools = tools,
                 toolChoice = toolChoice,
-                stream = true,
-            ),
-            parseJsonResponse = ::parseVertexGenerateContent,
-            consumeSseChunk = accumulator::consume,
-            buildStreamResult = accumulator::buildResult,
-            inactivityTimeoutSeconds = settings.llmInactivityReconnectTimeoutSeconds,
-            onStreamActivity = onStreamActivity,
-            isTerminalChunk = ::vertexChunkSignalsCompletion,
+                stream = false,
+            )
+        )
+        if (!responsePayload.isVertexGenerateContentBlockedOnOfficialEndpoint(settings)) {
+            return responsePayload
+        }
+        return executeRequest(
+            buildGeminiDeveloperApiGenerateContentRequest(
+                settings = settings,
+                systemPrompt = systemPrompt,
+                conversation = conversation,
+                tools = tools,
+                toolChoice = toolChoice,
+                fallbackBaseUrl = settings.baseUrl.takeIf { !usesOfficialVertexEndpoint(settings.provider, it) },
+            )
         )
     }
 
@@ -1115,65 +1159,12 @@ class OpenAiCompatibleClient(
             methodName = if (stream) "streamGenerateContent" else "generateContent",
             includeSseAlt = stream,
         )
-        val payload = JSONObject().apply {
-            put(
-                "contents",
-                JSONArray().apply {
-                    conversation.forEach { message ->
-                        put(sanitizeVertexConversationMessage(message))
-                    }
-                }
-            )
-            if (systemPrompt.isNotBlank()) {
-                put(
-                    "systemInstruction",
-                    JSONObject().apply {
-                        put(
-                            "parts",
-                            JSONArray().put(
-                                JSONObject().apply {
-                                    put("text", systemPrompt)
-                                }
-                            )
-                        )
-                    }
-                )
-            }
-            if (tools.isNotEmpty()) {
-                put(
-                    "tools",
-                    JSONArray().put(
-                        JSONObject().apply {
-                            put(
-                                "functionDeclarations",
-                                JSONArray().apply {
-                                    tools.forEach { tool ->
-                                        put(convertOpenAiToolToVertexFunctionDeclaration(tool))
-                                    }
-                                }
-                            )
-                        }
-                    )
-                )
-                put(
-                    "toolConfig",
-                    JSONObject().apply {
-                        put(
-                            "functionCallingConfig",
-                            JSONObject().apply {
-                                put(
-                                    "mode",
-                                    when (toolChoice) {
-                                        "required" -> "ANY"
-                                        else -> "AUTO"
-                                    }
-                                )
-                            }
-                        )
-                    }
-                )
-            }
-        }
+        val payload = buildVertexGenerateContentPayload(
+            systemPrompt = systemPrompt,
+            conversation = conversation,
+            tools = tools,
+            toolChoice = toolChoice,
+        )
 
         return Request.Builder()
             .url(endpoint)
@@ -1186,6 +1177,99 @@ class OpenAiCompatibleClient(
             .applyAetherLlmHeaders(settings.customHeaders)
             .post(payload.toString().toRequestBody(JsonMediaType))
             .build()
+    }
+
+    private fun buildGeminiDeveloperApiGenerateContentRequest(
+        settings: AppSettings,
+        systemPrompt: String,
+        conversation: List<JSONObject>,
+        tools: List<JSONObject>,
+        toolChoice: String?,
+        fallbackBaseUrl: String? = null,
+    ): Request {
+        val endpoint = buildGeminiDeveloperApiEndpoint(
+            modelId = settings.modelId,
+            apiKey = settings.apiKey,
+            fallbackBaseUrl = fallbackBaseUrl,
+        )
+        val payload = buildVertexGenerateContentPayload(
+            systemPrompt = systemPrompt,
+            conversation = conversation,
+            tools = tools,
+            toolChoice = toolChoice,
+        )
+
+        return Request.Builder()
+            .url(endpoint)
+            .addHeader("Content-Type", "application/json")
+            .applyAetherLlmHeaders(settings.customHeaders)
+            .post(payload.toString().toRequestBody(JsonMediaType))
+            .build()
+    }
+
+    private fun buildVertexGenerateContentPayload(
+        systemPrompt: String,
+        conversation: List<JSONObject>,
+        tools: List<JSONObject>,
+        toolChoice: String?,
+    ): JSONObject = JSONObject().apply {
+        put(
+            "contents",
+            JSONArray().apply {
+                conversation.forEach { message ->
+                    put(sanitizeVertexConversationMessage(message))
+                }
+            }
+        )
+        if (systemPrompt.isNotBlank()) {
+            put(
+                "systemInstruction",
+                JSONObject().apply {
+                    put(
+                        "parts",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("text", systemPrompt)
+                            }
+                        )
+                    )
+                }
+            )
+        }
+        if (tools.isNotEmpty()) {
+            put(
+                "tools",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put(
+                            "functionDeclarations",
+                            JSONArray().apply {
+                                tools.forEach { tool ->
+                                    put(convertOpenAiToolToVertexFunctionDeclaration(tool))
+                                }
+                            }
+                        )
+                    }
+                )
+            )
+            put(
+                "toolConfig",
+                JSONObject().apply {
+                    put(
+                        "functionCallingConfig",
+                        JSONObject().apply {
+                            put(
+                                "mode",
+                                when (toolChoice) {
+                                    "required" -> "ANY"
+                                    else -> "AUTO"
+                                }
+                            )
+                        }
+                    )
+                }
+            )
+        }
     }
 
     private fun buildOpenAiResponsesEndpoint(baseUrl: String): String {
@@ -1302,6 +1386,28 @@ class OpenAiCompatibleClient(
         }.build().toString()
     }
 
+    private fun buildGeminiDeveloperApiEndpoint(
+        modelId: String,
+        apiKey: String,
+        fallbackBaseUrl: String? = null,
+    ): String {
+        val trimmedApiKey = apiKey.trim()
+        if (trimmedApiKey.isBlank()) {
+            error("API Key is required for Vertex AI / Agent Platform.")
+        }
+        val normalizedModelName = normalizeGeminiDeveloperApiModelName(modelId)
+        val baseUrl = fallbackBaseUrl?.trim()?.takeIf(String::isNotBlank)
+            ?: "https://generativelanguage.googleapis.com/v1beta"
+        return parseAbsoluteBaseUrl(baseUrl)
+            .newBuilder()
+            .encodedPath("/v1beta/models/$normalizedModelName:generateContent")
+            .query(null)
+            .fragment(null)
+            .addQueryParameter("key", trimmedApiKey)
+            .build()
+            .toString()
+    }
+
     private fun normalizeVertexModelPath(modelId: String): String {
         val trimmedModelId = modelId.trim().ifBlank { error("Model ID is required.") }
         val withoutMethodSuffix = trimmedModelId
@@ -1316,6 +1422,17 @@ class OpenAiCompatibleClient(
 
             else -> "publishers/google/models/$withoutMethodSuffix"
         }
+    }
+
+    private fun normalizeGeminiDeveloperApiModelName(modelId: String): String {
+        val trimmedModelId = modelId.trim().ifBlank { error("Model ID is required.") }
+        val withoutMethodSuffix = trimmedModelId
+            .substringBefore(":generateContent")
+            .substringBefore(":streamGenerateContent")
+            .substringAfterLast("/models/")
+            .substringAfter("models/")
+            .substringAfter("google/")
+        return withoutMethodSuffix.substringAfterLast('/')
     }
 
     private fun convertOpenAiToolToVertexFunctionDeclaration(tool: JSONObject): JSONObject {
@@ -2783,6 +2900,19 @@ private data class HttpResponsePayload(
     val requestUrl: String,
     val retryAfterHeader: String = "",
 )
+
+private fun HttpResponsePayload.isVertexGenerateContentBlockedOnOfficialEndpoint(
+    settings: AppSettings,
+): Boolean {
+    if (isSuccessful || code != 403) {
+        return false
+    }
+    val normalizedBody = bodyString.lowercase()
+    return "blocked" in normalizedBody &&
+        "aiplatform.googleapis.com" in normalizedBody &&
+        "generatecontent" in normalizedBody &&
+        settings.provider == LlmProvider.VertexExpress
+}
 
 private fun buildLlmRequestException(
     responsePayload: HttpResponsePayload,

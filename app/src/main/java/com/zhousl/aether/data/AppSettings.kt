@@ -26,7 +26,7 @@ enum class LlmProvider(
     ),
     VertexExpress(
         storageValue = "vertex_express",
-        displayName = "Vertex AI (Express Mode)",
+        displayName = "Vertex AI / Agent Platform",
         defaultBaseUrl = "https://aiplatform.googleapis.com/v1",
         defaultModelId = "gemini-2.5-flash",
     ),
@@ -283,6 +283,9 @@ fun usesOfficialOpenAiEndpoint(
 }
 
 val OfficialVertexPreviewModels: List<String> = listOf(
+    "gemini-3.1-pro",
+    "gemini-3-flash",
+    "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite-preview",

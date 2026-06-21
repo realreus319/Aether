@@ -734,8 +734,8 @@ private fun ProviderSetupStep(
                             },
                         )
                         ProviderStageButton(
-                            label = "Vertex",
-                            subtitle = "Google Cloud Vertex API",
+                            label = "Agent Platform",
+                            subtitle = "Google Vertex Gemini API",
                             provider = LlmProvider.VertexExpress,
                             onClick = {
                                 onSelectProvider(LlmProvider.VertexExpress)

@@ -6,10 +6,146 @@ import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiCompatibleClientVertexTest {
     private val client = OpenAiCompatibleClient()
+
+    @Test
+    fun vertexStreamEntryPointUsesGenerateContentToAvoidBlockedStreamMethod() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "candidates": [
+                        {
+                          "content": {
+                            "role": "model",
+                            "parts": [
+                              { "text": "fallback ok" }
+                            ]
+                          },
+                          "finishReason": "STOP"
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val result = client.streamChatCompletion(
+                settings = AppSettings(
+                    provider = LlmProvider.VertexExpress,
+                    apiKey = "test-key",
+                    baseUrl = server.url("/v1").toString(),
+                    modelId = "gemini-2.5-flash",
+                ),
+                systemPrompt = "",
+                conversation = listOf(
+                    JSONObject(
+                        """
+                        {
+                          "role": "user",
+                          "parts": [
+                            { "text": "Hello" }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                ),
+            ).getOrThrow()
+
+            assertEquals("fallback ok", result.assistantText)
+
+            val request = server.takeRequest()
+            assertTrue(request.path!!.contains(":generateContent"))
+            assertFalse(request.path!!.contains(":streamGenerateContent"))
+            assertFalse(request.path!!.contains("alt=sse"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun vertexGenerateContentBlockedFallsBackToGeminiDeveloperApi() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "error": {
+                        "message": "Requests to this API aiplatform.googleapis.com method google.cloud.aiplatform.v1.PredictionService.GenerateContent are blocked."
+                      }
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "candidates": [
+                        {
+                          "content": {
+                            "role": "model",
+                            "parts": [
+                              { "text": "developer api ok" }
+                            ]
+                          },
+                          "finishReason": "STOP"
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val result = client.createChatCompletion(
+                settings = AppSettings(
+                    provider = LlmProvider.VertexExpress,
+                    apiKey = "test-key",
+                    baseUrl = server.url("/v1").toString(),
+                    modelId = "publishers/google/models/gemini-2.5-flash",
+                ),
+                systemPrompt = "",
+                conversation = listOf(
+                    JSONObject(
+                        """
+                        {
+                          "role": "user",
+                          "parts": [
+                            { "text": "Hello" }
+                          ]
+                        }
+                        """.trimIndent()
+                    )
+                ),
+            ).getOrThrow()
+
+            assertEquals("developer api ok", result.assistantText)
+
+            val vertexRequest = server.takeRequest()
+            val developerApiRequest = server.takeRequest()
+            assertTrue(vertexRequest.path!!.contains("/v1/publishers/google/models/gemini-2.5-flash:generateContent"))
+            assertTrue(developerApiRequest.path!!.contains("/v1beta/models/gemini-2.5-flash:generateContent"))
+            assertFalse(developerApiRequest.path!!.contains("publishers/google"))
+        } finally {
+            server.shutdown()
+        }
+    }
 
     @Test
     fun vertexRequestsStripFunctionIdsFromConversationPayload() = runBlocking {

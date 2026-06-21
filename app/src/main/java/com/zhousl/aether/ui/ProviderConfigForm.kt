@@ -336,7 +336,7 @@ fun ProviderConfigurationForm(
             text = when (selectedProvider) {
                 LlmProvider.OpenAiResponses -> "Use OpenAI-compatible /responses endpoints."
                 LlmProvider.OpenAiCompatible -> "Use OpenAI-compatible /chat/completions endpoints."
-                LlmProvider.VertexExpress -> "Use Vertex AI Express Mode generateContent."
+                LlmProvider.VertexExpress -> "Use Google Vertex AI / Gemini Enterprise Agent Platform generateContent."
                 LlmProvider.AnthropicMessages -> "Use Anthropic-compatible /messages endpoints."
             },
             style = MaterialTheme.typography.bodySmall,
