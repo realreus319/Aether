@@ -791,7 +791,7 @@ class AetherViewModel(
             current.copy(
                 currentScreen = AppScreen.Onboarding,
                 isOnboardingReplay = true,
-                onboardingStep = OnboardingStep.TermuxSetup,
+                onboardingStep = OnboardingStep.LocalRuntimeChoice,
                 onboardingReturnScreen = AppScreen.Settings,
                 awaitingFollowUpTour = false,
                 showFollowUpTourCard = false,
@@ -905,7 +905,7 @@ class AetherViewModel(
             current.copy(
                 currentScreen = AppScreen.Onboarding,
                 isOnboardingReplay = true,
-                onboardingStep = OnboardingStep.TermuxSetup,
+                onboardingStep = OnboardingStep.LocalRuntimeChoice,
                 onboardingReturnScreen = AppScreen.Chat,
                 awaitingFollowUpTour = false,
                 showFollowUpTourCard = false,
@@ -2591,7 +2591,7 @@ class AetherViewModel(
                     current.copy(
                         currentScreen = AppScreen.Onboarding,
                         isOnboardingReplay = true,
-                        onboardingStep = OnboardingStep.TermuxSetup,
+                        onboardingStep = OnboardingStep.LocalRuntimeChoice,
                         onboardingReturnScreen = AppScreen.Chat,
                         awaitingFollowUpTour = false,
                         showFollowUpTourCard = false,

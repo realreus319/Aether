@@ -956,7 +956,7 @@ private fun LocalRuntimePathButton(
                 Icon(icon, contentDescription = null, tint = accent)
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = TourTextPrimary)
+                Text(title, style = MaterialTheme.typography.titleMedium, color = TourTextPrimary)
                 Text(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall,

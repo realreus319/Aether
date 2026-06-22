@@ -323,7 +323,7 @@
     <string name="settings_treat_termux_as_ready">将 Termux 视为已就绪</string>
     <string name="settings_termux_ready_toggle_subtitle">开启 = 已就绪。关闭 = 未就绪。</string>
     <string name="settings_replay_follow_up_tour">重播后续引导</string>
-    <string name="settings_replay_follow_up_tour_description">从 Termux 开始，然后依次经过 Agent 模式、Tavily、技能和 MCP。</string>
+    <string name="settings_replay_follow_up_tour_description">从路线选择开始，然后依次经过本地配置、Tavily、技能和 MCP。</string>
     <string name="settings_replay_second_part">重播第二部分</string>
     <string name="settings_update_downloading_percent">正在下载 %1$d%%</string>
     <string name="settings_update_downloading">正在下载更新</string>
@@ -748,11 +748,11 @@
     <string name="settings_runtime_termux_unavailable_subtitle">先配置 Termux，才能设为默认运行环境。</string>
     <string name="settings_runtime_alpine_ready_subtitle">应用私有的内置 Linux 虚拟机，适合开发工具。</string>
     <string name="settings_runtime_alpine_unavailable_subtitle">先初始化 Alpine，才能设为默认运行环境。</string>
-    <string name="onboarding_local_runtime_choice_message">为引导选择一条本地能力路径。另一条路径之后可以在设置里单独配置。</string>
+    <string name="onboarding_local_runtime_choice_message">选择一条本地工具能力路径。</string>
     <string name="onboarding_alpine_vm_title">Alpine 虚拟机</string>
-    <string name="onboarding_alpine_vm_subtitle">内置应用私有 Linux 环境，适合脚本、开发工具和 stdio MCP。</string>
+    <string name="onboarding_alpine_vm_subtitle">需要更强 Linux 兼容性、运行更多本地服务时选这个。</string>
     <string name="onboarding_termux_agent_mode_title">Termux + Agent Mode</string>
-    <string name="onboarding_termux_agent_mode_subtitle">外部手机侧桥接，适合操作 Android、权限配置和 Agent Mode。</string>
+    <string name="onboarding_termux_agent_mode_subtitle">需要操作手机设备、权限和 Agent Mode 时选这个。</string>
     <string name="onboarding_alpine_runtime_message">配置内置 Alpine Linux 环境。它会保存在 Aether 的应用私有目录中。</string>
     <string name="onboarding_alpine_status_ready">Alpine 已就绪，并会作为默认本地运行环境。</string>
     <string name="onboarding_alpine_status_not_installed">初始化 Alpine 以使用 Aether 的内置 Linux 虚拟机。</string>

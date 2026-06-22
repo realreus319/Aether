@@ -330,7 +330,7 @@
     <string name="settings_treat_termux_as_ready">Treat Termux as ready</string>
     <string name="settings_termux_ready_toggle_subtitle">On = ready. Off = not ready.</string>
     <string name="settings_replay_follow_up_tour">Replay Follow-up Tour</string>
-    <string name="settings_replay_follow_up_tour_description">Starts from Termux, then goes through Agent Mode, Tavily, Skills, and MCP.</string>
+    <string name="settings_replay_follow_up_tour_description">Starts from route choice, then goes through local setup, Tavily, Skills, and MCP.</string>
     <string name="settings_replay_second_part">Replay second part</string>
     <string name="settings_update_downloading_percent">Downloading %1$d%%</string>
     <string name="settings_update_downloading">Downloading update</string>
@@ -769,11 +769,11 @@
     <string name="settings_runtime_termux_unavailable_subtitle">Configure Termux before selecting it as default.</string>
     <string name="settings_runtime_alpine_ready_subtitle">Built-in app-private Linux VM for development tools.</string>
     <string name="settings_runtime_alpine_unavailable_subtitle">Initialize Alpine before selecting it as default.</string>
-    <string name="onboarding_local_runtime_choice_message">Choose one local capability path for the tour. You can configure the other one later in Settings.</string>
+    <string name="onboarding_local_runtime_choice_message">Choose one local capability path for the tool.</string>
     <string name="onboarding_alpine_vm_title">Alpine virtual machine</string>
-    <string name="onboarding_alpine_vm_subtitle">Built-in app-private Linux environment for scripts, development tools, and stdio MCP.</string>
+    <string name="onboarding_alpine_vm_subtitle">Choose this for stronger Linux compatibility and broader local services.</string>
     <string name="onboarding_termux_agent_mode_title">Termux + Agent Mode</string>
-    <string name="onboarding_termux_agent_mode_subtitle">External Android-side bridge for phone operations, permissions, and Agent Mode.</string>
+    <string name="onboarding_termux_agent_mode_subtitle">Choose this to operate the device through Termux and Agent Mode.</string>
     <string name="onboarding_alpine_runtime_message">Set up the built-in Alpine Linux environment. It stays inside Aether\'s private app storage.</string>
     <string name="onboarding_alpine_status_ready">Alpine is ready and will be used as the default local runtime.</string>
     <string name="onboarding_alpine_status_not_installed">Initialize Alpine to use Aether\'s built-in Linux VM.</string>
