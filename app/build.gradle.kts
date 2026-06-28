@@ -127,6 +127,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    lint {
+        // targetSdk is intentionally capped at API 28 for local runtime execution.
+        disable += "ExpiredTargetSdkVersion"
+    }
 }
 
 kotlin {
