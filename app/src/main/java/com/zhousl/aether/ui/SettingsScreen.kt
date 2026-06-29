@@ -1274,17 +1274,17 @@ private fun SettingsHub(
                 )
                 CardDivider()
                 SettingsNavRow(
-                    icon = Icons.Rounded.Terminal,
-                    title = stringResource(R.string.settings_termux),
-                    subtitle = if (termuxReady) stringResource(R.string.settings_connected) else stringResource(R.string.settings_setup_required),
-                    onClick = { onNavigate(SettingsPage.Termux) },
-                )
-                CardDivider()
-                SettingsNavRow(
                     icon = Icons.Rounded.Code,
                     title = "Alpine",
                     subtitle = if (alpineReady) { stringResource(R.string.settings_alpine_subtitle_ready) } else { stringResource(R.string.settings_alpine_subtitle_setup) },
                     onClick = { onNavigate(SettingsPage.Alpine) },
+                )
+                CardDivider()
+                SettingsNavRow(
+                    icon = Icons.Rounded.Terminal,
+                    title = stringResource(R.string.settings_termux),
+                    subtitle = if (termuxReady) stringResource(R.string.settings_connected) else stringResource(R.string.settings_setup_required),
+                    onClick = { onNavigate(SettingsPage.Termux) },
                 )
                 if (showRuntimeDefaults) {
                     CardDivider()

@@ -603,9 +603,7 @@ private fun AetherAppContent(
                     isEditing = uiState.editingMessageId != null,
                     termuxSetupState = effectiveTermuxSetupState,
                     showStarterPromptHint = uiState.showStarterPromptHint,
-                    showTermuxSetupNotice = !uiState.awaitingFollowUpTour &&
-                        !uiState.showFollowUpTourCard &&
-                        !uiState.settings.termuxSetupNoticeDismissed,
+                    showTermuxSetupNotice = false,
                     onInputChanged = viewModel::updateDraftInput,
                     onModelSelected = viewModel::setCurrentChatModelSelection,
                     onRemoveDraftAttachment = viewModel::removeDraftAttachment,
