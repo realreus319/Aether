@@ -126,6 +126,7 @@ class ChatRepository(
         message: ChatMessage,
         position: Int,
     ) {
+        require(position >= 0) { "position must be non-negative" }
         migrateLegacyChatStateIfNeeded()
         database.withTransaction {
             chatHistoryDao.upsertMessage(
@@ -144,7 +145,7 @@ class ChatRepository(
             chatHistoryDao.deleteSession(sessionId)
             val meta = chatHistoryDao.getMeta()
             if (meta?.currentSessionId == sessionId) {
-                chatHistoryDao.upsertMeta(meta.copy(currentSessionId = DraftSessionId))
+                chatHistoryDao.upsertMeta(meta.copy(currentSessionId = null))
             }
         }
     }
@@ -154,6 +155,7 @@ class ChatRepository(
         fromPosition: Int,
         messages: List<ChatMessage>,
     ) {
+        require(fromPosition >= 0) { "fromPosition must be non-negative" }
         migrateLegacyChatStateIfNeeded()
         database.withTransaction {
             replaceMessagesFromPositionInTransaction(sessionId, fromPosition, messages)
@@ -189,13 +191,13 @@ class ChatRepository(
                 .takeIf { id -> id == DraftSessionId || sessions.any { it.session.id == id } }
                 ?: sessions.firstOrNull()?.session?.id
                 ?: DraftSessionId
-            chatHistoryDao.upsertMeta(
-                ChatStateMetaEntity(
-                    currentSessionId = safeCurrentSessionId,
-                    roomMigrationComplete = migrationComplete,
-                )
-            )
             if (sessions.isEmpty()) {
+                chatHistoryDao.upsertMeta(
+                    ChatStateMetaEntity(
+                        currentSessionId = null,
+                        roomMigrationComplete = migrationComplete,
+                    )
+                )
                 chatHistoryDao.deleteAllMessages()
                 chatHistoryDao.deleteAllSessions()
                 return@withTransaction
@@ -206,6 +208,12 @@ class ChatRepository(
             chatHistoryDao.upsertSessions(sessionEntities)
             chatHistoryDao.deleteSessionsExcept(sessionIds)
             chatHistoryDao.deleteMessagesExceptSessions(sessionIds)
+            chatHistoryDao.upsertMeta(
+                ChatStateMetaEntity(
+                    currentSessionId = safeCurrentSessionId.toStoredCurrentSessionId(),
+                    roomMigrationComplete = migrationComplete,
+                )
+            )
 
             sessions.forEach { snapshot ->
                 chatHistoryDao.deleteMessagesForSession(snapshot.session.id)
@@ -239,7 +247,7 @@ class ChatRepository(
             database.withTransaction {
                 chatHistoryDao.upsertMeta(
                     ChatStateMetaEntity(
-                        currentSessionId = legacyCurrentSessionId ?: DraftSessionId,
+                        currentSessionId = null,
                         roomMigrationComplete = true,
                     )
                 )
@@ -257,7 +265,7 @@ class ChatRepository(
             database.withTransaction {
                 chatHistoryDao.upsertMeta(
                     ChatStateMetaEntity(
-                        currentSessionId = legacyCurrentSessionId ?: DraftSessionId,
+                        currentSessionId = null,
                         roomMigrationComplete = true,
                     )
                 )
@@ -309,7 +317,7 @@ class ChatRepository(
         database.withTransaction {
             chatHistoryDao.upsertMeta(
                 ChatStateMetaEntity(
-                    currentSessionId = legacyCurrentSessionId ?: DraftSessionId,
+                    currentSessionId = null,
                     roomMigrationComplete = true,
                 )
             )
@@ -341,6 +349,9 @@ internal fun resolveLegacyCurrentSessionIdForMigration(
         ?: firstSessionId.takeIf { it.isNotBlank() }
         ?: DraftSessionId
 }
+
+private fun String?.toStoredCurrentSessionId(): String? = this
+    ?.takeUnless { it.isBlank() || it == DraftSessionId }
 
 private data class SessionListState(
     val rows: List<ChatSessionEntity>,
@@ -411,14 +422,16 @@ internal fun parseChatSessionsForMigration(rawValue: String): LegacyChatSessions
         LegacyChatSessionsParseResult(
             sessions = buildList {
                 for (sessionIndex in 0 until sessions.length()) {
-                    val session = sessions.optJSONObject(sessionIndex) ?: continue
+                    val session = checkNotNull(sessions.optJSONObject(sessionIndex)) {
+                        "Invalid chat session at index $sessionIndex"
+                    }
                     add(
                         ChatSession(
                             id = session.optString("id").ifBlank { "session-$sessionIndex" },
                             title = session.optString("title"),
                             preview = session.optString("preview"),
                             hasCustomTitle = session.optBoolean("hasCustomTitle", false),
-                            messages = parseMessages(session.optJSONArray("messages")),
+                            messages = parseMessages(session.optJSONArrayOrThrow("messages", sessionIndex)),
                             selectedSkillIds = parseStringList(session.optJSONArray("selectedSkillIds")).ifEmpty {
                                 parseActiveSkillContexts(session.optString("activeSkillsJson")).map { it.skillId }
                             },
@@ -455,6 +468,7 @@ private fun corruptedChatStateSession(
             text = "Aether could not read the stored chat history (${throwable.javaClass.simpleName}). " +
                 "The app is showing this recovery placeholder instead of hiding the conversation list.",
             createdAtMillis = 0L,
+            providerPayloadJson = rawValue,
         )
     ),
 )
@@ -486,7 +500,9 @@ private fun parseMessages(messages: JSONArray?): List<ChatMessage> {
 
     return buildList {
         for (messageIndex in 0 until messages.length()) {
-            val message = messages.optJSONObject(messageIndex) ?: continue
+            val message = checkNotNull(messages.optJSONObject(messageIndex)) {
+                "Invalid chat message at index $messageIndex"
+            }
             add(parseMessage(message, messageIndex))
         }
     }
@@ -765,6 +781,19 @@ private fun ChatToolInvocation.toJson(): JSONObject = JSONObject().apply {
 private fun parseStringList(rawValue: String): List<String> = runCatching {
     parseStringList(JSONArray(rawValue))
 }.getOrDefault(emptyList())
+
+
+private fun JSONObject.optJSONArrayOrThrow(
+    key: String,
+    sessionIndex: Int,
+): JSONArray? {
+    if (!has(key) || isNull(key)) {
+        return null
+    }
+    return checkNotNull(optJSONArray(key)) {
+        "Invalid $key array for chat session at index $sessionIndex"
+    }
+}
 
 private fun parseStringList(array: JSONArray?): List<String> {
     if (array == null) return emptyList()

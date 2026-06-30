@@ -32,7 +32,7 @@ data class ChatSessionEntity(
         ),
     ],
     indices = [
-        Index(value = ["sessionId", "position"]),
+        Index(value = ["sessionId", "position"], unique = true),
         Index(value = ["sessionId", "responseGroupId"]),
         Index(value = ["sessionId", "author"]),
     ],
@@ -50,11 +50,22 @@ data class ChatMessageEntity(
     val messageSchemaVersion: Int = 1,
 )
 
-@Entity(tableName = "chat_state_meta")
+@Entity(
+    tableName = "chat_state_meta",
+    foreignKeys = [
+        ForeignKey(
+            entity = ChatSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["currentSessionId"],
+            onDelete = ForeignKey.SET_NULL,
+        ),
+    ],
+    indices = [Index(value = ["currentSessionId"])],
+)
 data class ChatStateMetaEntity(
     @PrimaryKey
     val id: String = ChatStateMetaEntityId,
-    val currentSessionId: String,
+    val currentSessionId: String?,
     val roomMigrationComplete: Boolean,
 )
 
