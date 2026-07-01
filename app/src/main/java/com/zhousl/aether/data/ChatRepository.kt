@@ -27,6 +27,7 @@ import com.zhousl.aether.ui.MessageDisplayKind
 import com.zhousl.aether.ui.ReasoningSummaryChunk
 import com.zhousl.aether.ui.ReasoningTrace
 import com.zhousl.aether.ui.syncActiveBranches
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -36,12 +37,14 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DraftSessionId = "draft"
+private const val MessageJsonChunkSize = 64 * 1024
 
 
 private val Context.chatDataStore by preferencesDataStore(name = "aether_chats")
@@ -50,6 +53,12 @@ data class PersistedChatState(
     val sessions: List<ChatSession> = emptyList(),
     val currentSessionId: String = DraftSessionId,
 )
+
+enum class PersistedChatWriteIntent {
+    SyncSnapshot,
+    DeleteSession,
+    ReplaceFromImport,
+}
 
 class ChatRepository(
     private val context: Context,
@@ -60,6 +69,7 @@ class ChatRepository(
     @OptIn(ExperimentalCoroutinesApi::class)
     val chatState: Flow<PersistedChatState> = flow {
         migrateLegacyChatStateIfNeeded()
+        val restoredMessageCache = mutableMapOf<ChatMessageCacheKey, LoadedChatMessage>()
         emitAll(
             combine(
                 chatHistoryDao.observeSessions(),
@@ -76,9 +86,18 @@ class ChatRepository(
             }.flatMapLatest { state ->
                 val sessionIds = state.rows.map { it.id }
                 val messagesFlow = if (sessionIds.isEmpty()) {
+                    restoredMessageCache.clear()
                     flowOf(emptyList())
                 } else {
-                    chatHistoryDao.observeMessagesForSessions(sessionIds)
+                    chatHistoryDao.observeMessageSummariesForSessions(sessionIds).mapLatest { summaries ->
+                        restoredMessageCache.keys.retainAll(summaries.mapTo(mutableSetOf()) { it.cacheKey })
+                        database.withTransaction {
+                            chatHistoryDao.getMessagesForSummariesSafely(
+                                summaries = summaries,
+                                restoredMessageCache = restoredMessageCache,
+                            )
+                        }
+                    }
                 }
                 messagesFlow.map { messages ->
                     val messagesBySessionId = messages.groupBy { it.sessionId }
@@ -97,12 +116,14 @@ class ChatRepository(
     suspend fun updateChatState(
         sessions: List<ChatSession>,
         currentSessionId: String,
+        writeIntent: PersistedChatWriteIntent = PersistedChatWriteIntent.SyncSnapshot,
     ) {
         migrateLegacyChatStateIfNeeded()
         replaceChatState(
             sessions = sessions.mapIndexed { index, session -> session.toSnapshot(index) },
             currentSessionId = currentSessionId,
             migrationComplete = true,
+            writeIntent = writeIntent,
         )
         context.chatDataStore.edit { preferences ->
             preferences.remove(SESSIONS_JSON)
@@ -186,6 +207,7 @@ class ChatRepository(
         sessions: List<ChatSessionSnapshot>,
         currentSessionId: String,
         migrationComplete: Boolean,
+        writeIntent: PersistedChatWriteIntent = PersistedChatWriteIntent.SyncSnapshot,
     ) {
         database.withTransaction {
             val safeCurrentSessionId = currentSessionId
@@ -193,6 +215,9 @@ class ChatRepository(
                 ?: sessions.firstOrNull()?.session?.id
                 ?: DraftSessionId
             if (sessions.isEmpty()) {
+                if (writeIntent == PersistedChatWriteIntent.SyncSnapshot && chatHistoryDao.getSessions().isNotEmpty()) {
+                    return@withTransaction
+                }
                 chatHistoryDao.upsertMeta(
                     ChatStateMetaEntity(
                         currentSessionId = null,
@@ -235,47 +260,29 @@ class ChatRepository(
 
         if (roomMeta?.roomMigrationComplete == true) {
             if (legacySessionsJson.isNotBlank() || preferences[CURRENT_SESSION_ID] != null) {
-                context.chatDataStore.edit { data ->
-                    data.remove(SESSIONS_JSON)
-                    data.remove(CURRENT_SESSION_ID)
-                    data[ROOM_MIGRATION_COMPLETE] = true
-                }
+                clearLegacyChatState()
             }
             return@withLock
         }
 
         if (legacyMigrationComplete && legacySessionsJson.isBlank()) {
-            database.withTransaction {
-                chatHistoryDao.upsertMeta(
-                    ChatStateMetaEntity(
-                        currentSessionId = null,
-                        roomMigrationComplete = true,
-                    )
-                )
-            }
+            markRoomMigrationCompletePreservingExistingState()
             if (preferences[CURRENT_SESSION_ID] != null) {
-                context.chatDataStore.edit { data ->
-                    data.remove(CURRENT_SESSION_ID)
-                    data[ROOM_MIGRATION_COMPLETE] = true
-                }
+                clearLegacyChatState()
             }
             return@withLock
         }
 
         if (legacySessionsJson.isBlank()) {
-            database.withTransaction {
-                chatHistoryDao.upsertMeta(
-                    ChatStateMetaEntity(
-                        currentSessionId = null,
-                        roomMigrationComplete = true,
-                    )
-                )
-            }
-            context.chatDataStore.edit { data ->
-                data.remove(SESSIONS_JSON)
-                data.remove(CURRENT_SESSION_ID)
-                data[ROOM_MIGRATION_COMPLETE] = true
-            }
+            markRoomMigrationCompletePreservingExistingState()
+            clearLegacyChatState()
+            return@withLock
+        }
+
+        val existingSessions = chatHistoryDao.getSessions()
+        if (existingSessions.isNotEmpty()) {
+            markRoomMigrationCompletePreservingExistingState()
+            clearLegacyChatState()
             return@withLock
         }
 
@@ -291,11 +298,7 @@ class ChatRepository(
                 ),
                 migrationComplete = true,
             )
-            context.chatDataStore.edit { data ->
-                data.remove(SESSIONS_JSON)
-                data.remove(CURRENT_SESSION_ID)
-                data[ROOM_MIGRATION_COMPLETE] = true
-            }
+            clearLegacyChatState()
             return@withLock
         }
         if (legacySessions.isNotEmpty()) {
@@ -307,22 +310,33 @@ class ChatRepository(
                 ),
                 migrationComplete = true,
             )
-            context.chatDataStore.edit { data ->
-                data.remove(SESSIONS_JSON)
-                data.remove(CURRENT_SESSION_ID)
-                data[ROOM_MIGRATION_COMPLETE] = true
-            }
+            clearLegacyChatState()
             return@withLock
         }
+
+        markRoomMigrationCompletePreservingExistingState()
+        clearLegacyChatState()
+    }
+
+    private suspend fun markRoomMigrationCompletePreservingExistingState() {
+        val existingSessions = chatHistoryDao.getSessions()
+        val existingMeta = chatHistoryDao.getMeta()
+        val existingSessionIds = existingSessions.mapTo(mutableSetOf()) { it.id }
+        val currentSessionId = existingMeta
+            ?.currentSessionId
+            ?.takeIf { id -> id in existingSessionIds }
 
         database.withTransaction {
             chatHistoryDao.upsertMeta(
                 ChatStateMetaEntity(
-                    currentSessionId = null,
+                    currentSessionId = currentSessionId,
                     roomMigrationComplete = true,
                 )
             )
         }
+    }
+
+    private suspend fun clearLegacyChatState() {
         context.chatDataStore.edit { data ->
             data.remove(SESSIONS_JSON)
             data.remove(CURRENT_SESSION_ID)
@@ -354,6 +368,105 @@ internal fun resolveLegacyCurrentSessionIdForMigration(
 private fun String?.toStoredCurrentSessionId(): String? = this
     ?.takeUnless { it.isBlank() || it == DraftSessionId }
 
+private suspend fun ChatHistoryDao.getMessagesForSummariesSafely(
+    summaries: List<ChatMessageSummaryEntity>,
+    restoredMessageCache: MutableMap<ChatMessageCacheKey, LoadedChatMessage>,
+): List<LoadedChatMessage> = summaries.map { summary ->
+    val cacheKey = summary.cacheKey
+    restoredMessageCache[cacheKey] ?: run {
+        val message = try {
+            loadMessageEntityInChunks(summary)?.let { entity ->
+                ChatMessageEntityMapper.toChatMessage(entity, entity.position)
+            }
+        } catch (throwable: Exception) {
+            if (throwable is CancellationException) throw throwable
+            null
+        } ?: ChatMessageEntityMapper.summaryToChatMessage(summary)
+
+        LoadedChatMessage(
+            sessionId = summary.sessionId,
+            position = summary.position,
+            message = message,
+        ).also { loadedMessage -> restoredMessageCache[cacheKey] = loadedMessage }
+    }
+}
+
+private suspend fun ChatHistoryDao.loadMessageEntityInChunks(
+    summary: ChatMessageSummaryEntity,
+): ChatMessageEntity? {
+    val jsonLength = getMessageJsonLength(
+        sessionId = summary.sessionId,
+        messageId = summary.id,
+    ) ?: return null
+    if (jsonLength <= 0) {
+        return summary.toMessageEntity(messageJson = "")
+    }
+
+    val builder = StringBuilder(jsonLength)
+    var start = 1
+    while (start <= jsonLength) {
+        val requestedLength = minOf(MessageJsonChunkSize, jsonLength - start + 1)
+        val chunk = getMessageJsonChunk(
+            sessionId = summary.sessionId,
+            messageId = summary.id,
+            start = start,
+            length = requestedLength,
+        ) ?: return null
+        if (chunk.isEmpty()) {
+            return null
+        }
+        builder.append(chunk)
+        start += requestedLength
+    }
+    return summary.toMessageEntity(builder.toString())
+}
+
+private fun ChatMessageSummaryEntity.toMessageEntity(messageJson: String): ChatMessageEntity = ChatMessageEntity(
+    sessionId = sessionId,
+    id = id,
+    position = position,
+    messageJson = messageJson,
+    author = author,
+    text = text,
+    createdAtMillis = createdAtMillis,
+    responseGroupId = responseGroupId,
+    displayKind = displayKind,
+    messageSchemaVersion = messageSchemaVersion,
+)
+
+private val ChatMessageSummaryEntity.cacheKey: ChatMessageCacheKey
+    get() = ChatMessageCacheKey(
+        sessionId = sessionId,
+        id = id,
+        position = position,
+        author = author,
+        text = text,
+        createdAtMillis = createdAtMillis,
+        responseGroupId = responseGroupId,
+        displayKind = displayKind,
+        messageSchemaVersion = messageSchemaVersion,
+        messageJsonLength = messageJsonLength,
+    )
+
+private data class ChatMessageCacheKey(
+    val sessionId: String,
+    val id: String,
+    val position: Int,
+    val author: String,
+    val text: String,
+    val createdAtMillis: Long?,
+    val responseGroupId: String?,
+    val displayKind: String?,
+    val messageSchemaVersion: Int,
+    val messageJsonLength: Int?,
+)
+
+private data class LoadedChatMessage(
+    val sessionId: String,
+    val position: Int,
+    val message: ChatMessage,
+)
+
 private data class SessionListState(
     val rows: List<ChatSessionEntity>,
     val currentSessionId: String,
@@ -383,10 +496,8 @@ private fun ChatSession.toSnapshot(index: Int): ChatSessionSnapshot = ChatSessio
     },
 )
 
-private fun ChatSessionEntity.toChatSession(messages: List<ChatMessageEntity>): ChatSession {
-    val orderedMessages = messages.sortedBy { it.position }.mapIndexed { index, message ->
-        ChatMessageEntityMapper.toChatMessage(message, index)
-    }
+private fun ChatSessionEntity.toChatSession(messages: List<LoadedChatMessage>): ChatSession {
+    val orderedMessages = messages.sortedBy { it.position }.map { it.message }
     val activeSkills = parseActiveSkillContexts(activeSkillsJson)
     return ChatSession(
         id = id,

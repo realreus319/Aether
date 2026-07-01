@@ -102,10 +102,14 @@ class ChatStateStore(
     }
 
     suspend fun updateAndFlush(
+        writeIntent: PersistedChatWriteIntent = PersistedChatWriteIntent.SyncSnapshot,
         transform: (PersistedChatState) -> PersistedChatState,
     ): PersistedChatState {
         repositoryStateReady.await()
-        val updated = update(transform)
+        val updated = update(
+            writeIntent = writeIntent,
+            transform = transform,
+        )
         flushLatestPending(propagateFailure = true)
         return updated
     }
@@ -127,6 +131,7 @@ class ChatStateStore(
                 chatRepository.updateChatState(
                     sessions = pending.state.sessions,
                     currentSessionId = pending.state.currentSessionId,
+                    writeIntent = pending.writeIntent,
                 )
             }.exceptionOrNull()
             if (persistError != null) {
@@ -256,15 +261,25 @@ class ChatStateStore(
     }
 
     fun update(
+        writeIntent: PersistedChatWriteIntent = PersistedChatWriteIntent.SyncSnapshot,
         transform: (PersistedChatState) -> PersistedChatState,
     ): PersistedChatState {
         val pending = synchronized(updateLock) {
             val updated = transform(_state.value)
             localGeneration += 1
             _state.value = updated
+            val effectiveWriteIntent = latestPending
+                ?.writeIntent
+                ?.takeIf { pendingIntent ->
+                    writeIntent == PersistedChatWriteIntent.SyncSnapshot &&
+                        updated.sessions.isEmpty() &&
+                        pendingIntent != PersistedChatWriteIntent.SyncSnapshot
+                }
+                ?: writeIntent
             PendingPersistedChatState(
                 generation = localGeneration,
                 state = updated,
+                writeIntent = effectiveWriteIntent,
             ).also {
                 latestPending = it
             }
@@ -279,6 +294,7 @@ class ChatStateStore(
     private data class PendingPersistedChatState(
         val generation: Long,
         val state: PersistedChatState,
+        val writeIntent: PersistedChatWriteIntent,
     )
 
     private companion object {

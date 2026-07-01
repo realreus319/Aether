@@ -60,6 +60,7 @@ data class ChatMessageSummaryEntity(
     val responseGroupId: String? = null,
     val displayKind: String? = null,
     val messageSchemaVersion: Int = 1,
+    val messageJsonLength: Int? = null,
 )
 
 @Entity(

@@ -26,6 +26,7 @@ import com.zhousl.aether.data.LlmProvider
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.LocalRuntimeId
 import com.zhousl.aether.data.ProviderModelOption
+import com.zhousl.aether.data.PersistedChatWriteIntent
 import com.zhousl.aether.data.availableModelOptions
 import com.zhousl.aether.data.McpClientManager
 import com.zhousl.aether.data.McpServerConfig
@@ -1198,7 +1199,9 @@ class AetherViewModel(
                     )
                     extensionsRepository.updateInstalledSkills(imported.installedSkills)
                     extensionsRepository.updateMcpServers(imported.mcpServers)
-                    chatStateStore.updateAndFlush {
+                    chatStateStore.updateAndFlush(
+                        writeIntent = PersistedChatWriteIntent.ReplaceFromImport,
+                    ) {
                         it.copy(
                             sessions = imported.sessions,
                             currentSessionId = imported.currentSessionId,
@@ -2707,7 +2710,9 @@ class AetherViewModel(
         sharedWorkspaceFilePaths: Collection<String> = emptyList(),
     ) {
         var unreferencedSharedWorkspaceFilePaths = emptyList<String>()
-        chatStateStore.update { persisted ->
+        chatStateStore.update(
+            writeIntent = PersistedChatWriteIntent.DeleteSession,
+        ) { persisted ->
             unreferencedSharedWorkspaceFilePaths = sharedWorkspaceFilePaths.unreferencedWorkspaceFilePaths(
                 sessions = persisted.sessions,
                 excludedSessionIds = setOf(sessionId),

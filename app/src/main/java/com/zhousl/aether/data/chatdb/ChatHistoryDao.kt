@@ -10,6 +10,9 @@ interface ChatHistoryDao {
     @Query("SELECT * FROM chat_sessions ORDER BY sortOrder ASC")
     fun observeSessions(): Flow<List<ChatSessionEntity>>
 
+    @Query("SELECT * FROM chat_sessions ORDER BY sortOrder ASC")
+    suspend fun getSessions(): List<ChatSessionEntity>
+
     @Query("SELECT * FROM chat_state_meta WHERE id = :id")
     fun observeMeta(id: String = ChatStateMetaEntityId): Flow<ChatStateMetaEntity?>
 
@@ -17,7 +20,7 @@ interface ChatHistoryDao {
     suspend fun getMeta(id: String = ChatStateMetaEntityId): ChatStateMetaEntity?
 
     @Query("""
-        SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion
+        SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion, length(messageJson) AS messageJsonLength
         FROM chat_messages
         WHERE sessionId = :sessionId
         ORDER BY position ASC
@@ -25,7 +28,7 @@ interface ChatHistoryDao {
     fun observeMessageSummariesForSession(sessionId: String): Flow<List<ChatMessageSummaryEntity>>
 
     @Query("""
-        SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion
+        SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion, length(messageJson) AS messageJsonLength
         FROM chat_messages
         WHERE sessionId IN (:sessionIds)
         ORDER BY sessionId ASC, position ASC
@@ -33,13 +36,26 @@ interface ChatHistoryDao {
     fun observeMessageSummariesForSessions(sessionIds: List<String>): Flow<List<ChatMessageSummaryEntity>>
 
     @Query("""
-        SELECT *
+        SELECT length(messageJson)
         FROM chat_messages
-        WHERE sessionId IN (:sessionIds)
-        ORDER BY sessionId ASC, position ASC
+        WHERE sessionId = :sessionId AND id = :messageId
     """)
-    fun observeMessagesForSessions(sessionIds: List<String>): Flow<List<ChatMessageEntity>>
+    suspend fun getMessageJsonLength(
+        sessionId: String,
+        messageId: String,
+    ): Int?
 
+    @Query("""
+        SELECT substr(messageJson, :start, :length)
+        FROM chat_messages
+        WHERE sessionId = :sessionId AND id = :messageId
+    """)
+    suspend fun getMessageJsonChunk(
+        sessionId: String,
+        messageId: String,
+        start: Int,
+        length: Int,
+    ): String?
 
     @Upsert
     suspend fun upsertMeta(meta: ChatStateMetaEntity)
