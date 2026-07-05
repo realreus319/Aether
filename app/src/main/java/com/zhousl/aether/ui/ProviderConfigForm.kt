@@ -60,6 +60,8 @@ import com.zhousl.aether.data.requiresApiKey
 import com.zhousl.aether.data.sanitizeProviderId
 import com.zhousl.aether.ui.theme.AetherOnSurface
 import com.zhousl.aether.ui.theme.AetherOnSurfaceVariant
+import com.zhousl.aether.ui.theme.AetherPrimary
+import com.zhousl.aether.ui.theme.AetherSurface
 import com.zhousl.aether.ui.theme.AetherSurfaceHigh
 import java.util.UUID
 
@@ -639,13 +641,13 @@ private fun ProviderFormDropdownField(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.background(Color.White),
+            containerColor = AetherSurface,
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(option.displayName, color = AetherOnSurface) },
                     trailingIcon = if (option.displayName == selectedValue) {
-                        { Icon(Icons.Rounded.Check, contentDescription = null, tint = ProviderFormPrimary) }
+                        { Icon(Icons.Rounded.Check, contentDescription = null, tint = AetherPrimary) }
                     } else {
                         null
                     },

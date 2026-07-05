@@ -991,7 +991,7 @@ private fun MarkdownPreviewDialogFrame(
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp, vertical = 24.dp)
                 .clip(RoundedCornerShape(28.dp))
-                .background(Color.White.copy(alpha = 0.98f))
+                .background(AetherSurface.copy(alpha = 0.98f))
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
