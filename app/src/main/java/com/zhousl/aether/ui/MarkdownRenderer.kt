@@ -970,8 +970,8 @@ private fun MarkdownMermaidPreviewDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(24.dp))
-                .background(Color.White),
-            backgroundColor = Color.White,
+                .background(AetherSurfaceHigh),
+            backgroundColor = AetherSurfaceHigh,
         )
     }
 }
