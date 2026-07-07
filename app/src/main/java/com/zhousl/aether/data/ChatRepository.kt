@@ -13,6 +13,7 @@ import com.zhousl.aether.data.chatdb.ChatMessageSummaryEntity
 import com.zhousl.aether.data.chatdb.ChatSessionEntity
 import com.zhousl.aether.data.chatdb.ChatSessionSnapshot
 import com.zhousl.aether.data.chatdb.ChatStateMetaEntity
+import com.zhousl.aether.data.chatdb.ChatWorkspaceFileRefEntity
 
 import com.zhousl.aether.ui.AttachmentKind
 import com.zhousl.aether.ui.AttachmentWorkspaceState
@@ -45,6 +46,7 @@ import org.json.JSONObject
 
 private const val DraftSessionId = "draft"
 private const val MessageJsonChunkSize = 64 * 1024
+private const val WorkspaceFileRefQueryChunkSize = 500
 
 
 private val Context.chatDataStore by preferencesDataStore(name = "aether_chats")
@@ -155,12 +157,15 @@ class ChatRepository(
         migrateLegacyChatStateIfNeeded()
         invalidateRestoredMessage(sessionId = sessionId, messageId = message.id)
         database.withTransaction {
-            chatHistoryDao.upsertMessage(
-                ChatMessageEntityMapper.toEntity(
-                    sessionId = sessionId,
-                    position = position,
-                    message = message,
-                )
+            val messageEntity = ChatMessageEntityMapper.toEntity(
+                sessionId = sessionId,
+                position = position,
+                message = message,
+            )
+            chatHistoryDao.upsertMessage(messageEntity)
+            replaceWorkspaceFileRefsForMessagesInTransaction(
+                sessionId = sessionId,
+                messages = listOf(message),
             )
         }
     }
@@ -173,6 +178,55 @@ class ChatRepository(
             val meta = chatHistoryDao.getMeta()
             if (meta?.currentSessionId == sessionId) {
                 chatHistoryDao.upsertMeta(meta.copy(currentSessionId = null))
+            }
+        }
+    }
+
+    suspend fun getUnreferencedWorkspaceFilePathsForDeletedSession(sessionId: String): List<String> {
+        migrateLegacyChatStateIfNeeded()
+        return database.withTransaction {
+            if (chatHistoryDao.getMeta()?.workspaceFileRefsComplete != true) {
+                return@withTransaction emptyList()
+            }
+            val candidatePaths = chatHistoryDao.getWorkspaceFilePathsForSession(sessionId).normalizedWorkspaceFilePaths()
+            if (candidatePaths.isEmpty()) {
+                emptyList()
+            } else {
+                val referencedPaths = getWorkspaceFileRefsForPathsChunked(candidatePaths)
+                    .asSequence()
+                    .filterNot { ref -> ref.sessionId == sessionId }
+                    .map { ref -> ref.path }
+                    .toSet()
+                candidatePaths.filterNot(referencedPaths::contains)
+            }
+        }
+    }
+
+    suspend fun getUnreferencedWorkspaceFilePathsForDeletedMessages(
+        sessionId: String,
+        messageIds: List<String>,
+    ): List<String> {
+        migrateLegacyChatStateIfNeeded()
+        val safeMessageIds = messageIds.map(String::trim).filter(String::isNotEmpty).distinct()
+        if (safeMessageIds.isEmpty()) return emptyList()
+        val safeMessageIdSet = safeMessageIds.toSet()
+        return database.withTransaction {
+            if (chatHistoryDao.getMeta()?.workspaceFileRefsComplete != true) {
+                return@withTransaction emptyList()
+            }
+            val candidatePaths = getWorkspaceFilePathsForMessagesChunked(
+                sessionId = sessionId,
+                messageIds = safeMessageIds,
+            ).normalizedWorkspaceFilePaths()
+            if (candidatePaths.isEmpty()) {
+                emptyList()
+            } else {
+                val referencedPaths = getWorkspaceFileRefsForPathsChunked(candidatePaths)
+                    .asSequence()
+                    .filterNot { ref -> ref.sessionId == sessionId && ref.messageId in safeMessageIdSet }
+                    .map { ref -> ref.path }
+                    .toSet()
+                candidatePaths.filterNot(referencedPaths::contains)
             }
         }
     }
@@ -195,16 +249,20 @@ class ChatRepository(
         fromPosition: Int,
         messages: List<ChatMessage>,
     ) {
+        chatHistoryDao.deleteWorkspaceFileRefsFromPosition(sessionId, fromPosition)
         chatHistoryDao.deleteMessagesFromPosition(sessionId, fromPosition)
         if (messages.isNotEmpty()) {
-            chatHistoryDao.upsertMessages(
-                messages.mapIndexed { index, message ->
-                    ChatMessageEntityMapper.toEntity(
-                        sessionId = sessionId,
-                        position = fromPosition + index,
-                        message = message,
-                    )
-                }
+            val messageEntities = messages.mapIndexed { index, message ->
+                ChatMessageEntityMapper.toEntity(
+                    sessionId = sessionId,
+                    position = fromPosition + index,
+                    message = message,
+                )
+            }
+            chatHistoryDao.upsertMessages(messageEntities)
+            replaceWorkspaceFileRefsForMessagesInTransaction(
+                sessionId = sessionId,
+                messages = messages,
             )
         }
     }
@@ -229,8 +287,10 @@ class ChatRepository(
                     ChatStateMetaEntity(
                         currentSessionId = null,
                         roomMigrationComplete = migrationComplete,
+                        workspaceFileRefsComplete = true,
                     )
                 )
+                chatHistoryDao.deleteAllWorkspaceFileRefs()
                 chatHistoryDao.deleteAllMessages()
                 chatHistoryDao.deleteAllSessions()
                 return@withTransaction
@@ -239,23 +299,59 @@ class ChatRepository(
             val sessionEntities = sessions.map { it.session }
             val sessionIds = sessionEntities.map { it.id }
             chatHistoryDao.upsertSessions(sessionEntities)
+            chatHistoryDao.deleteWorkspaceFileRefsExceptSessions(sessionIds)
             chatHistoryDao.deleteSessionsExcept(sessionIds)
             chatHistoryDao.deleteMessagesExceptSessions(sessionIds)
+            val existingWorkspaceFileRefsComplete = chatHistoryDao.getMeta()?.workspaceFileRefsComplete ?: true
             chatHistoryDao.upsertMeta(
                 ChatStateMetaEntity(
                     currentSessionId = safeCurrentSessionId.toStoredCurrentSessionId(),
                     roomMigrationComplete = migrationComplete,
+                    workspaceFileRefsComplete = existingWorkspaceFileRefsComplete,
                 )
             )
 
             sessions.forEach { snapshot ->
+                chatHistoryDao.deleteWorkspaceFileRefsForSession(snapshot.session.id)
                 chatHistoryDao.deleteMessagesForSession(snapshot.session.id)
                 if (snapshot.messages.isNotEmpty()) {
                     chatHistoryDao.upsertMessages(snapshot.messages)
+                    if (snapshot.workspaceFileRefs.isNotEmpty()) {
+                        chatHistoryDao.upsertWorkspaceFileRefs(snapshot.workspaceFileRefs)
+                    }
                 }
             }
         }
     }
+
+    private suspend fun replaceWorkspaceFileRefsForMessagesInTransaction(
+        sessionId: String,
+        messages: List<ChatMessage>,
+    ) {
+        if (messages.isEmpty()) return
+        messages.forEach { message ->
+            chatHistoryDao.deleteWorkspaceFileRefsForMessage(sessionId, message.id)
+        }
+        val refs = messages.toWorkspaceFileRefs(sessionId)
+        if (refs.isNotEmpty()) {
+            chatHistoryDao.upsertWorkspaceFileRefs(refs)
+        }
+    }
+
+    private suspend fun getWorkspaceFilePathsForMessagesChunked(
+        sessionId: String,
+        messageIds: List<String>,
+    ): List<String> = messageIds.chunked(WorkspaceFileRefQueryChunkSize).flatMap { chunk ->
+        chatHistoryDao.getWorkspaceFilePathsForMessages(sessionId = sessionId, messageIds = chunk)
+    }
+
+    private suspend fun getWorkspaceFileRefsForPathsChunked(paths: List<String>): List<ChatWorkspaceFileRefEntity> =
+        paths.chunked(WorkspaceFileRefQueryChunkSize).flatMap { chunk ->
+            chatHistoryDao.getWorkspaceFileRefsForPaths(chunk)
+        }
+
+    private fun Collection<String>.normalizedWorkspaceFilePaths(): List<String> =
+        map(String::trim).filter(String::isNotEmpty).distinct().sorted()
 
     // TODO(Room v2): remove legacy DataStore chat import.
     private suspend fun migrateLegacyChatStateIfNeeded() = migrationMutex.withLock {
@@ -338,6 +434,7 @@ class ChatRepository(
                 ChatStateMetaEntity(
                     currentSessionId = currentSessionId,
                     roomMigrationComplete = true,
+                    workspaceFileRefsComplete = existingMeta?.workspaceFileRefsComplete ?: existingSessions.isEmpty(),
                 )
             )
         }
@@ -535,16 +632,42 @@ private fun ChatSession.toSessionEntity(sortOrder: Long): ChatSessionEntity = Ch
     sortOrder = sortOrder,
 )
 
-private fun ChatSession.toSnapshot(index: Int): ChatSessionSnapshot = ChatSessionSnapshot(
-    session = toSessionEntity(index.toLong()),
-    messages = syncActiveBranches(messages).mapIndexed { messageIndex, message ->
-        ChatMessageEntityMapper.toEntity(
-            sessionId = id,
-            position = messageIndex,
-            message = message,
-        )
-    },
-)
+private fun List<ChatMessage>.toWorkspaceFileRefs(sessionId: String): List<ChatWorkspaceFileRefEntity> =
+    flatMap { message ->
+        message.collectWorkspaceFilePathsForIndex()
+            .map { path ->
+                ChatWorkspaceFileRefEntity(
+                    sessionId = sessionId,
+                    messageId = message.id,
+                    path = path,
+                )
+            }
+    }.distinctBy { ref -> Triple(ref.sessionId, ref.messageId, ref.path) }
+
+private fun ChatMessage.collectWorkspaceFilePathsForIndex(): List<String> =
+    (attachments
+        .map { attachment -> attachment.workspacePath.trim() }
+        .filter(String::isNotEmpty) +
+        branchGroup
+            ?.branches
+            .orEmpty()
+            .flatMap { branch -> branch.flatMap { it.collectWorkspaceFilePathsForIndex() } })
+        .distinct()
+
+private fun ChatSession.toSnapshot(index: Int): ChatSessionSnapshot {
+    val syncedMessages = syncActiveBranches(messages)
+    return ChatSessionSnapshot(
+        session = toSessionEntity(index.toLong()),
+        messages = syncedMessages.mapIndexed { messageIndex, message ->
+            ChatMessageEntityMapper.toEntity(
+                sessionId = id,
+                position = messageIndex,
+                message = message,
+            )
+        },
+        workspaceFileRefs = syncedMessages.toWorkspaceFileRefs(id),
+    )
+}
 
 private fun ChatSessionEntity.toChatSession(messages: List<LoadedChatMessage>): ChatSession {
     val orderedMessages = messages.sortedBy { it.position }.map { it.message }

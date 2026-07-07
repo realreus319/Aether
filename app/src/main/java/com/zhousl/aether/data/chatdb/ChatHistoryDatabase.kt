@@ -4,14 +4,17 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
         ChatSessionEntity::class,
         ChatMessageEntity::class,
+        ChatWorkspaceFileRefEntity::class,
         ChatStateMetaEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class ChatHistoryDatabase : RoomDatabase() {
@@ -26,7 +29,31 @@ abstract class ChatHistoryDatabase : RoomDatabase() {
                 context.applicationContext,
                 ChatHistoryDatabase::class.java,
                 "aether_chat_history.db",
-            ).build().also { instance = it }
+            ).addMigrations(Migration1To2)
+                .build()
+                .also { instance = it }
         }
+    }
+}
+
+internal object Migration1To2 : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `chat_workspace_file_refs` (
+                `sessionId` TEXT NOT NULL,
+                `messageId` TEXT NOT NULL,
+                `path` TEXT NOT NULL,
+                PRIMARY KEY(`sessionId`, `messageId`, `path`),
+                FOREIGN KEY(`sessionId`, `messageId`) REFERENCES `chat_messages`(`sessionId`, `id`) ON UPDATE NO ACTION ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_chat_workspace_file_refs_path` ON `chat_workspace_file_refs` (`path`)",
+        )
+        db.execSQL(
+            "ALTER TABLE `chat_state_meta` ADD COLUMN `workspaceFileRefsComplete` INTEGER NOT NULL DEFAULT 0",
+        )
     }
 }
