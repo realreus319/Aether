@@ -268,6 +268,7 @@ fun AppSettings.parallelToolCallSupportKey(): String {
 
 fun AppSettings.supportsParallelToolCalls(): Boolean =
     !basicFunctionCallingCompatibilityMode &&
+        modelCapabilities().supportsParallelToolCalls &&
         parallelToolCallSupportKey() !in unsupportedParallelToolCallProviderKeys
 
 fun isProviderSetupValid(

@@ -1,6 +1,10 @@
 package com.zhousl.aether.data
 
 import kotlinx.coroutines.runBlocking
+import com.zhousl.aether.ui.AttachmentKind
+import com.zhousl.aether.ui.ChatAttachment
+import java.net.InetAddress
+import okhttp3.Dns
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONObject
@@ -371,6 +375,285 @@ class OpenAiCompatibleClientProviderFormatsTest {
         } finally {
             server.shutdown()
         }
+    }
+
+    @Test
+    fun minimaxRequestsEnableReasoningSplitAndCanDisableThinking() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "role": "assistant",
+                            "content": "Title"
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val settings = AppSettings(
+                provider = LlmProvider.OpenAiCompatible,
+                apiKey = "test-key",
+                baseUrl = server.url("/v1").toString(),
+                modelId = "MiniMax-M3",
+            )
+
+            client.createChatCompletion(
+                settings = settings,
+                systemPrompt = "",
+                conversation = listOf(
+                    JSONObject().apply {
+                        put("role", "user")
+                        put("content", "Summarize")
+                    }
+                ),
+                disableReasoning = true,
+            ).getOrThrow()
+
+            val payload = JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals(true, payload.getBoolean("reasoning_split"))
+            assertEquals("disabled", payload.getJSONObject("thinking").getString("type"))
+            assertFalse(payload.has("reasoning"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun moonshotKimiDowngradesRequiredToolChoiceToAuto() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "role": "assistant",
+                            "content": "Done."
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val settings = AppSettings(
+                provider = LlmProvider.OpenAiCompatible,
+                apiKey = "test-key",
+                baseUrl = server.url("/v1").toString(),
+                modelId = "kimi-k2.6",
+            )
+
+            client.createChatCompletion(
+                settings = settings,
+                systemPrompt = "",
+                conversation = client.buildConversation(
+                    settings = settings,
+                    messages = listOf(
+                        LlmMessage(
+                            role = "user",
+                            contentParts = listOf(
+                                LlmTextPart("Inspect this image."),
+                                LlmImagePart(
+                                    mimeType = "image/jpeg",
+                                    base64Data = "abcd",
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                tools = listOf(readTool()),
+                toolChoice = "required",
+            ).getOrThrow()
+
+            val payload = JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals("auto", payload.getString("tool_choice"))
+            val content = payload.getJSONArray("messages")
+                .getJSONObject(0)
+                .getJSONArray("content")
+            assertEquals("image_url", content.getJSONObject(1).getString("type"))
+            assertEquals(
+                "data:image/jpeg;base64,abcd",
+                content.getJSONObject(1)
+                    .getJSONObject("image_url")
+                    .getString("url"),
+            )
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun moonshotHostDowngradesRequiredToolChoiceToAuto() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "role": "assistant",
+                            "content": "Done."
+                          }
+                        }
+                      ]
+                    }
+                    """.trimIndent()
+                )
+        )
+        server.start()
+
+        try {
+            val client = OpenAiCompatibleClient(
+                httpClient = okhttp3.OkHttpClient.Builder()
+                    .dns(
+                        object : Dns {
+                            override fun lookup(hostname: String): List<InetAddress> = when (hostname) {
+                                "api.moonshot.cn" -> listOf(InetAddress.getByName("127.0.0.1"))
+                                else -> Dns.SYSTEM.lookup(hostname)
+                            }
+                        }
+                    )
+                    .build(),
+            )
+            val settings = AppSettings(
+                provider = LlmProvider.OpenAiCompatible,
+                apiKey = "test-key",
+                baseUrl = "http://api.moonshot.cn:${server.port}/v1",
+                modelId = "moonshot-v1-auto",
+            )
+
+            client.createChatCompletion(
+                settings = settings,
+                systemPrompt = "",
+                conversation = listOf(
+                    JSONObject().apply {
+                        put("role", "user")
+                        put("content", "Read README.md")
+                    }
+                ),
+                tools = listOf(readTool()),
+                toolChoice = "required",
+            ).getOrThrow()
+
+            val payload = JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals("auto", payload.getString("tool_choice"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun moonshotKimiImageAttachmentsAreNotInlinedInAgentRequests() {
+        val attachment = ChatAttachment(
+            id = "att-1",
+            uri = "content://aether/photo.jpg",
+            name = "photo.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 16,
+            workspacePath = "uploads/photo.jpg",
+            kind = AttachmentKind.Image,
+            inlineBase64 = "abcd",
+        )
+
+        assertFalse(
+            shouldInlineWorkspaceImageAttachment(
+                attachment = attachment,
+                settings = AppSettings(
+                    provider = LlmProvider.OpenAiCompatible,
+                    baseUrl = "https://api.moonshot.cn/v1",
+                    modelId = "kimi-k2.6",
+                ),
+            )
+        )
+        assertTrue(
+            shouldInlineWorkspaceImageAttachment(
+                attachment = attachment,
+                settings = AppSettings(
+                    provider = LlmProvider.OpenAiCompatible,
+                    baseUrl = "https://api.openai.com/v1",
+                    modelId = "gpt-5.4",
+                ),
+            )
+        )
+    }
+
+    @Test
+    fun modelCapabilitiesResolveProviderSpecificFormats() {
+        val deepSeek = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://api.deepseek.com/v1",
+            modelId = "deepseek-chat",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.DeepSeek, deepSeek.family)
+        assertEquals(ReasoningDisableStyle.DeepSeekThinkingDisabled, deepSeek.reasoningDisableStyle)
+        assertTrue(deepSeek.mustPreserveReasoningContentForToolCalls)
+        assertTrue(deepSeek.supportsRequiredToolChoice)
+
+        val miniMax = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://api.minimax.io/v1",
+            modelId = "MiniMax-M3",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.MiniMax, miniMax.family)
+        assertEquals(ReasoningDisableStyle.MiniMaxThinkingDisabled, miniMax.reasoningDisableStyle)
+        assertTrue(miniMax.supportsReasoningSplit)
+        assertTrue(miniMax.mustPreserveReasoningContentForToolCalls)
+
+        val miMo = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://api.openai-compatible.test/v1",
+            modelId = "mimo-v2.5-pro",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.MiMo, miMo.family)
+        assertEquals(ReasoningDisableStyle.None, miMo.reasoningDisableStyle)
+        assertTrue(miMo.mustPreserveReasoningContentForToolCalls)
+
+        val moonshot = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://api.moonshot.cn/v1",
+            modelId = "kimi-k2.6",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.Moonshot, moonshot.family)
+        assertFalse(moonshot.supportsRequiredToolChoice)
+        assertFalse(moonshot.supportsInlineImageWithTools)
+
+        val openRouter = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://openrouter.ai/api/v1",
+            modelId = "openai/gpt-oss-120b",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.OpenRouter, openRouter.family)
+        assertEquals(ReasoningDisableStyle.OpenRouterReasoningEffortNone, openRouter.reasoningDisableStyle)
+
+        val generic = AppSettings(
+            provider = LlmProvider.OpenAiCompatible,
+            baseUrl = "https://api.example.com/v1",
+            modelId = "generic-model",
+        ).modelCapabilities()
+        assertEquals(LlmCompatibilityFamily.Generic, generic.family)
+        assertTrue(generic.supportsRequiredToolChoice)
+        assertTrue(generic.supportsInlineImageWithTools)
+        assertTrue(generic.supportsParallelToolCalls)
     }
 
     @Test

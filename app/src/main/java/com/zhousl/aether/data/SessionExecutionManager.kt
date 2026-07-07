@@ -547,7 +547,10 @@ class SessionExecutionManager(
 
             val result = agent.runTurn(
                 settings = request.settings,
-                messages = buildRequestMessages(request.requestMessages),
+                messages = buildRequestMessages(
+                    messages = request.requestMessages,
+                    settings = request.settings,
+                ),
                 workspaceDirectory = runtimeWorkspaceDirectory,
                 availableSkills = resolvedAvailableSkills,
                 activeSkills = resolvedActiveSkills,
@@ -633,7 +636,7 @@ class SessionExecutionManager(
                     if (drained.isNotEmpty()) {
                         appendSteerInterruptionMessages(handle, drained)
                     }
-                    drained.map { buildSteerRequestMessage(it.message) }
+                    drained.map { buildSteerRequestMessage(it.message, request.settings) }
                 },
             )
             if (handle.pauseRequested) {
@@ -1343,10 +1346,13 @@ class SessionExecutionManager(
     private fun resolveSessionTitle(sessionId: String): String =
         chatStateStore.state.value.sessions.firstOrNull { it.id == sessionId }?.title.orEmpty()
 
-    private fun buildRequestMessages(messages: List<ChatMessage>): List<LlmMessage> =
+    private fun buildRequestMessages(
+        messages: List<ChatMessage>,
+        settings: AppSettings,
+    ): List<LlmMessage> =
         messages.afterLatestCompactedContext()
             .filter { it.displayKind != MessageDisplayKind.CompactStatus }
-            .map(::buildRequestMessage)
+            .map { message -> buildRequestMessage(message, settings) }
 
     private fun List<ChatMessage>.afterLatestCompactedContext(): List<ChatMessage> {
         val compactContextIndex = indexOfLast { it.displayKind == MessageDisplayKind.HiddenContext }
@@ -1357,13 +1363,16 @@ class SessionExecutionManager(
         }
     }
 
-    private fun buildRequestMessage(message: ChatMessage): LlmMessage {
+    private fun buildRequestMessage(
+        message: ChatMessage,
+        settings: AppSettings,
+    ): LlmMessage {
         val parts = mutableListOf<LlmContentPart>()
         if (message.text.isNotBlank()) {
             parts += LlmTextPart(message.text)
         }
         message.attachments.forEach { attachment ->
-            parts += buildWorkspaceAttachmentParts(attachment)
+            parts += buildWorkspaceAttachmentParts(attachment, settings)
         }
         if (parts.isEmpty()) {
             parts += LlmTextPart("[Empty message]")
@@ -1375,7 +1384,10 @@ class SessionExecutionManager(
         )
     }
 
-    private fun buildSteerRequestMessage(message: ChatMessage): LlmMessage {
+    private fun buildSteerRequestMessage(
+        message: ChatMessage,
+        settings: AppSettings,
+    ): LlmMessage {
         val steerText = buildString {
             append(
                 "The user sent this while you were already working. Treat it as supplemental context for the current task. " +
@@ -1388,11 +1400,12 @@ class SessionExecutionManager(
                 append("\n\nThe user also attached additional files for the current task.")
             }
         }
-        return buildRequestMessage(message.copy(text = steerText))
+        return buildRequestMessage(message.copy(text = steerText), settings)
     }
 
     private fun buildWorkspaceAttachmentParts(
         attachment: ChatAttachment,
+        settings: AppSettings,
     ): List<LlmContentPart> {
         if (attachment.workspacePath.isBlank()) {
             return listOf(LlmTextPart(
@@ -1400,8 +1413,13 @@ class SessionExecutionManager(
             ))
         }
 
+        val shouldInlineImage = shouldInlineWorkspaceImageAttachment(attachment, settings)
         val accessHint = if (attachment.kind == AttachmentKind.Image) {
-            "This image was copied into the workspace and is also inserted into this model request when local bytes are available. Use analyze_image on this path for a focused second pass if needed."
+            if (shouldInlineImage) {
+                "This image was copied into the workspace and is also inserted into this model request when local bytes are available. Use analyze_image on this path for a focused second pass if needed."
+            } else {
+                "This image was copied into the workspace. Call analyze_image on this exact path before answering questions about the image; this model endpoint does not reliably read images in tool-enabled agent requests."
+            }
         } else {
             "Inspect this file through read, grep, find, ls, or bash inside the workspace instead of assuming its contents."
         }
@@ -1418,7 +1436,7 @@ class SessionExecutionManager(
             }
         )
         val imagePart = attachment.takeIf {
-            it.kind == AttachmentKind.Image &&
+            shouldInlineImage &&
                 it.mimeType.startsWith("image/") &&
                 it.inlineBase64.isNotBlank()
         }?.let {
@@ -2546,3 +2564,10 @@ class SessionExecutionManager(
         }
     }
 }
+
+internal fun shouldInlineWorkspaceImageAttachment(
+    attachment: ChatAttachment,
+    settings: AppSettings,
+): Boolean =
+    attachment.kind == AttachmentKind.Image &&
+        settings.modelCapabilities().supportsInlineImageWithTools

@@ -25,7 +25,6 @@ import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
-import java.net.URI
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToLong
@@ -944,7 +943,7 @@ class OpenAiCompatibleClient(
                         }
                     }
                 )
-                put("tool_choice", if (settings.basicFunctionCallingCompatibilityMode) "auto" else toolChoice ?: "auto")
+                put("tool_choice", normalizedOpenAiToolChoice(settings, toolChoice))
                 if (!settings.basicFunctionCallingCompatibilityMode) {
                     parallelToolCalls?.let { put("parallel_tool_calls", it) }
                 }
@@ -1053,7 +1052,7 @@ class OpenAiCompatibleClient(
                         }
                     }
                 )
-                put("tool_choice", if (settings.basicFunctionCallingCompatibilityMode) "auto" else toolChoice ?: "auto")
+                put("tool_choice", normalizedOpenAiToolChoice(settings, toolChoice))
                 if (!settings.basicFunctionCallingCompatibilityMode) {
                     parallelToolCalls?.let { put("parallel_tool_calls", it) }
                 }
@@ -1067,6 +1066,7 @@ class OpenAiCompatibleClient(
                     },
                 )
             }
+            putReasoningSplitIfNeeded(settings)
             putReasoningDisabledIfNeeded(settings, disableReasoning)
         }
 
@@ -1622,28 +1622,16 @@ class OpenAiCompatibleClient(
         return if (preview.isBlank()) "" else " Response preview: $preview"
     }
 
-    private fun shouldIncludeEmptyReasoningContentForToolCalls(settings: AppSettings): Boolean {
-        if (settings.provider != LlmProvider.OpenAiCompatible) return false
-        val host = runCatching {
-            URI(settings.baseUrl.trim()).host.orEmpty().lowercase()
-        }.getOrDefault("")
-        val model = settings.modelId.lowercase()
-        return "deepseek" in host || "deepseek" in model
-    }
+    private fun shouldIncludeEmptyReasoningContentForToolCalls(settings: AppSettings): Boolean =
+        settings.modelCapabilities().mustPreserveReasoningContentForToolCalls
 
     private fun JSONObject.putReasoningDisabledIfNeeded(
         settings: AppSettings,
         disableReasoning: Boolean,
     ) {
         if (!disableReasoning) return
-        if (settings.provider != LlmProvider.OpenAiCompatible && settings.provider != LlmProvider.OpenAiResponses) return
-
-        val host = runCatching {
-            URI(settings.baseUrl.trim()).host.orEmpty().lowercase()
-        }.getOrDefault("")
-        val model = settings.modelId.lowercase()
-        when {
-            "openrouter" in host || "openrouter" in model -> {
+        when (settings.modelCapabilities().reasoningDisableStyle) {
+            ReasoningDisableStyle.OpenRouterReasoningEffortNone -> {
                 put(
                     "reasoning",
                     JSONObject().apply {
@@ -1652,7 +1640,8 @@ class OpenAiCompatibleClient(
                 )
             }
 
-            "deepseek" in host || "deepseek" in model -> {
+            ReasoningDisableStyle.DeepSeekThinkingDisabled,
+            ReasoningDisableStyle.MiniMaxThinkingDisabled -> {
                 put(
                     "thinking",
                     JSONObject().apply {
@@ -1660,6 +1649,27 @@ class OpenAiCompatibleClient(
                     },
                 )
             }
+
+            ReasoningDisableStyle.None -> Unit
+        }
+    }
+
+    private fun JSONObject.putReasoningSplitIfNeeded(settings: AppSettings) {
+        if (settings.modelCapabilities().supportsReasoningSplit) {
+            put("reasoning_split", true)
+        }
+    }
+
+    private fun normalizedOpenAiToolChoice(
+        settings: AppSettings,
+        toolChoice: String?,
+    ): String {
+        if (settings.basicFunctionCallingCompatibilityMode) return "auto"
+        val requested = toolChoice ?: "auto"
+        return if (requested == "required" && !settings.modelCapabilities().supportsRequiredToolChoice) {
+            "auto"
+        } else {
+            requested
         }
     }
 
