@@ -1413,9 +1413,9 @@ class SessionExecutionManager(
             ))
         }
 
-        val shouldInlineImage = shouldInlineWorkspaceImageAttachment(attachment, settings)
-        val accessHint = if (attachment.kind == AttachmentKind.Image) {
-            if (shouldInlineImage) {
+        val canInlineImage = canInlineWorkspaceImageAttachment(attachment, settings)
+        val accessHint = if (isWorkspaceImageAttachment(attachment)) {
+            if (canInlineImage) {
                 "This image was copied into the workspace and is also inserted into this model request when local bytes are available. Use analyze_image on this path for a focused second pass if needed."
             } else {
                 "This image was copied into the workspace. Call analyze_image on this exact path before answering questions about the image; this model endpoint does not reliably read images in tool-enabled agent requests."
@@ -1436,9 +1436,7 @@ class SessionExecutionManager(
             }
         )
         val imagePart = attachment.takeIf {
-            shouldInlineImage &&
-                it.mimeType.startsWith("image/") &&
-                it.inlineBase64.isNotBlank()
+            canInlineImage
         }?.let {
             LlmImagePart(
                 mimeType = it.mimeType,
@@ -2569,5 +2567,16 @@ internal fun shouldInlineWorkspaceImageAttachment(
     attachment: ChatAttachment,
     settings: AppSettings,
 ): Boolean =
-    attachment.kind == AttachmentKind.Image &&
+    isWorkspaceImageAttachment(attachment) &&
         settings.modelCapabilities().supportsInlineImageWithTools
+
+private fun canInlineWorkspaceImageAttachment(
+    attachment: ChatAttachment,
+    settings: AppSettings,
+): Boolean =
+    shouldInlineWorkspaceImageAttachment(attachment, settings) &&
+        attachment.inlineBase64.isNotBlank()
+
+private fun isWorkspaceImageAttachment(attachment: ChatAttachment): Boolean =
+    attachment.kind == AttachmentKind.Image &&
+        attachment.mimeType.startsWith("image/")

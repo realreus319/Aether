@@ -780,15 +780,17 @@ class OpenAiCompatibleClient(
         onReasoningSummaryDelta: suspend (String) -> Unit,
         onStreamActivity: suspend () -> Unit,
     ): ChatCompletionResult {
+        val capabilities = settings.modelCapabilities()
         val accumulator = OpenAiStreamAccumulator(
             onTextDelta = onTextDelta,
             onReasoningDelta = onReasoningDelta,
             onReasoningSummaryDelta = onReasoningSummaryDelta,
-            includeEmptyReasoningContentForToolCalls = shouldIncludeEmptyReasoningContentForToolCalls(settings),
+            includeEmptyReasoningContentForToolCalls = shouldIncludeEmptyReasoningContentForToolCalls(capabilities),
         )
         return executeStreamingRequest(
             request = buildOpenAiRequest(
                 settings = settings,
+                capabilities = capabilities,
                 systemPrompt = systemPrompt,
                 conversation = conversation,
                 tools = tools,
@@ -915,6 +917,7 @@ class OpenAiCompatibleClient(
         if (settings.provider.requiresApiKey(settings.baseUrl) && trimmedApiKey.isBlank()) {
             error("API Key is required for ${settings.provider.displayName}.")
         }
+        val capabilities = settings.modelCapabilities()
         val payload = JSONObject().apply {
             put("model", settings.modelId.trim())
             put("store", false)
@@ -943,7 +946,7 @@ class OpenAiCompatibleClient(
                         }
                     }
                 )
-                put("tool_choice", normalizedOpenAiToolChoice(settings, toolChoice))
+                put("tool_choice", normalizedOpenAiToolChoice(settings, capabilities, toolChoice))
                 if (!settings.basicFunctionCallingCompatibilityMode) {
                     parallelToolCalls?.let { put("parallel_tool_calls", it) }
                 }
@@ -951,7 +954,7 @@ class OpenAiCompatibleClient(
             if (stream) {
                 put("stream", true)
             }
-            putReasoningDisabledIfNeeded(settings, disableReasoning)
+            putReasoningDisabledIfNeeded(capabilities, disableReasoning)
         }
 
         return Request.Builder()
@@ -1008,6 +1011,7 @@ class OpenAiCompatibleClient(
 
     private fun buildOpenAiRequest(
         settings: AppSettings,
+        capabilities: ModelCapabilities = settings.modelCapabilities(),
         systemPrompt: String,
         conversation: List<JSONObject>,
         tools: List<JSONObject>,
@@ -1052,7 +1056,7 @@ class OpenAiCompatibleClient(
                         }
                     }
                 )
-                put("tool_choice", normalizedOpenAiToolChoice(settings, toolChoice))
+                put("tool_choice", normalizedOpenAiToolChoice(settings, capabilities, toolChoice))
                 if (!settings.basicFunctionCallingCompatibilityMode) {
                     parallelToolCalls?.let { put("parallel_tool_calls", it) }
                 }
@@ -1066,8 +1070,8 @@ class OpenAiCompatibleClient(
                     },
                 )
             }
-            putReasoningSplitIfNeeded(settings)
-            putReasoningDisabledIfNeeded(settings, disableReasoning)
+            putReasoningSplitIfNeeded(capabilities)
+            putReasoningDisabledIfNeeded(capabilities, disableReasoning)
         }
 
         return Request.Builder()
@@ -1622,15 +1626,15 @@ class OpenAiCompatibleClient(
         return if (preview.isBlank()) "" else " Response preview: $preview"
     }
 
-    private fun shouldIncludeEmptyReasoningContentForToolCalls(settings: AppSettings): Boolean =
-        settings.modelCapabilities().mustPreserveReasoningContentForToolCalls
+    private fun shouldIncludeEmptyReasoningContentForToolCalls(capabilities: ModelCapabilities): Boolean =
+        capabilities.mustPreserveReasoningContentForToolCalls
 
     private fun JSONObject.putReasoningDisabledIfNeeded(
-        settings: AppSettings,
+        capabilities: ModelCapabilities,
         disableReasoning: Boolean,
     ) {
         if (!disableReasoning) return
-        when (settings.modelCapabilities().reasoningDisableStyle) {
+        when (capabilities.reasoningDisableStyle) {
             ReasoningDisableStyle.OpenRouterReasoningEffortNone -> {
                 put(
                     "reasoning",
@@ -1654,19 +1658,20 @@ class OpenAiCompatibleClient(
         }
     }
 
-    private fun JSONObject.putReasoningSplitIfNeeded(settings: AppSettings) {
-        if (settings.modelCapabilities().supportsReasoningSplit) {
+    private fun JSONObject.putReasoningSplitIfNeeded(capabilities: ModelCapabilities) {
+        if (capabilities.supportsReasoningSplit) {
             put("reasoning_split", true)
         }
     }
 
     private fun normalizedOpenAiToolChoice(
         settings: AppSettings,
+        capabilities: ModelCapabilities,
         toolChoice: String?,
     ): String {
         if (settings.basicFunctionCallingCompatibilityMode) return "auto"
         val requested = toolChoice ?: "auto"
-        return if (requested == "required" && !settings.modelCapabilities().supportsRequiredToolChoice) {
+        return if (requested == "required" && !capabilities.supportsRequiredToolChoice) {
             "auto"
         } else {
             requested

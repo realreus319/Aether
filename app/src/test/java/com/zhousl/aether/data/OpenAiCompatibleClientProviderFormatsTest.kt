@@ -539,7 +539,7 @@ class OpenAiCompatibleClientProviderFormatsTest {
                 provider = LlmProvider.OpenAiCompatible,
                 apiKey = "test-key",
                 baseUrl = "http://api.moonshot.cn:${server.port}/v1",
-                modelId = "moonshot-v1-auto",
+                modelId = "custom-model-v1",
             )
 
             client.createChatCompletion(
