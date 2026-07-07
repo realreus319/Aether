@@ -57,6 +57,33 @@ interface ChatHistoryDao {
         length: Int,
     ): String?
 
+    @Query("""
+        SELECT DISTINCT path
+        FROM chat_workspace_file_refs
+        WHERE sessionId = :sessionId
+        ORDER BY path ASC
+    """)
+    suspend fun getWorkspaceFilePathsForSession(sessionId: String): List<String>
+
+    @Query("""
+        SELECT DISTINCT path
+        FROM chat_workspace_file_refs
+        WHERE sessionId = :sessionId AND messageId IN (:messageIds)
+        ORDER BY path ASC
+    """)
+    suspend fun getWorkspaceFilePathsForMessages(
+        sessionId: String,
+        messageIds: List<String>,
+    ): List<String>
+
+    @Query("""
+        SELECT sessionId, messageId, path
+        FROM chat_workspace_file_refs
+        WHERE path IN (:paths)
+        ORDER BY path ASC
+    """)
+    suspend fun getWorkspaceFileRefsForPaths(paths: List<String>): List<ChatWorkspaceFileRefEntity>
+
     @Upsert
     suspend fun upsertMeta(meta: ChatStateMetaEntity)
 
@@ -71,6 +98,24 @@ interface ChatHistoryDao {
 
     @Upsert
     suspend fun upsertMessages(messages: List<ChatMessageEntity>)
+
+    @Upsert
+    suspend fun upsertWorkspaceFileRefs(refs: List<ChatWorkspaceFileRefEntity>)
+
+    @Query("DELETE FROM chat_workspace_file_refs WHERE sessionId = :sessionId AND messageId = :messageId")
+    suspend fun deleteWorkspaceFileRefsForMessage(sessionId: String, messageId: String)
+
+    @Query("DELETE FROM chat_workspace_file_refs WHERE sessionId = :sessionId AND messageId IN (SELECT id FROM chat_messages WHERE sessionId = :sessionId AND position >= :fromPosition)")
+    suspend fun deleteWorkspaceFileRefsFromPosition(sessionId: String, fromPosition: Int)
+
+    @Query("DELETE FROM chat_workspace_file_refs WHERE sessionId = :sessionId")
+    suspend fun deleteWorkspaceFileRefsForSession(sessionId: String)
+
+    @Query("DELETE FROM chat_workspace_file_refs WHERE sessionId NOT IN (:sessionIds)")
+    suspend fun deleteWorkspaceFileRefsExceptSessions(sessionIds: List<String>)
+
+    @Query("DELETE FROM chat_workspace_file_refs")
+    suspend fun deleteAllWorkspaceFileRefs()
 
     @Query("DELETE FROM chat_messages WHERE sessionId = :sessionId AND position >= :fromPosition")
     suspend fun deleteMessagesFromPosition(sessionId: String, fromPosition: Int)

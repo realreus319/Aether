@@ -1093,10 +1093,8 @@ class AetherViewModel(
         }
 
         var didUpdate = false
-        var sharedWorkspaceFilePaths = emptyList<String>()
         _uiState.update { current ->
             val session = current.sessions.firstOrNull { it.id == sessionId } ?: return@update current
-            sharedWorkspaceFilePaths = session.workspaceFilePathsForCleanup()
             val updatedSessions = current.sessions.filterNot { it.id == sessionId }
             if (updatedSessions.size == current.sessions.size) return@update current
             didUpdate = true
@@ -1113,11 +1111,29 @@ class AetherViewModel(
             )
         }
         if (didUpdate) {
-            persistDeleteSession(
-                sessionId = sessionId,
-                sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
-            )
-            captureAnalyticsEvent(event = "conversation deleted")
+            viewModelScope.launch {
+                chatStateStore.flush()
+                val sharedWorkspaceFilePaths = withContext(Dispatchers.IO) {
+                    runCatching {
+                        runtime.chatRepository.getUnreferencedWorkspaceFilePathsForDeletedSession(sessionId)
+                    }.getOrElse { throwable ->
+                        diagnosticLogger.exception(
+                            category = "storage",
+                            event = "unreferenced_workspace_lookup_failed",
+                            throwable = throwable,
+                            level = "warn",
+                            sessionId = sessionId,
+                            details = mapOf("lookup_scope" to "session"),
+                        )
+                        emptyList()
+                    }
+                }
+                persistDeleteSession(
+                    sessionId = sessionId,
+                    sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
+                )
+                captureAnalyticsEvent(event = "conversation deleted")
+            }
         }
     }
 
@@ -1296,7 +1312,7 @@ class AetherViewModel(
         var didUpdate = false
         var updatedSessionForPersistence: ChatSession? = null
         var removedSessionForPersistence = false
-        var sharedWorkspaceFilePaths = emptyList<String>()
+        var removedMessageIds = emptyList<String>()
 
         _uiState.update { current ->
             val sessionIndex = current.sessions.indexOfFirst { it.id == sessionId }
@@ -1308,44 +1324,43 @@ class AetherViewModel(
 
             val trimFromIndex = session.messages.resolveConversationTrimIndex(messageIndex)
             val trimmedMessages = session.messages.take(trimFromIndex)
+            val removedMessages = session.messages.drop(trimFromIndex)
+            removedMessageIds = removedMessages.map { it.id }
             val updatedSessions = current.sessions.toMutableList().apply {
                 removeAt(sessionIndex)
                 if (trimmedMessages.isNotEmpty()) {
-                    val removedMessages = session.messages.drop(trimFromIndex)
                     val updatedSession = session.withMessages(trimmedMessages)
                     updatedSessionForPersistence = updatedSession
-                    sharedWorkspaceFilePaths = session.copy(messages = removedMessages).workspaceFilePathsForCleanup()
                     add(sessionIndex.coerceAtMost(size), updatedSession)
                 } else {
                     removedSessionForPersistence = true
-                    sharedWorkspaceFilePaths = session.workspaceFilePathsForCleanup()
                 }
             }
 
             didUpdate = true
-                current.copy(
-                    sessions = updatedSessions,
-                    currentSessionId = when {
-                        trimmedMessages.isEmpty() && current.currentSessionId == sessionId -> DraftSessionId
-                        else -> current.currentSessionId
-                    },
-                    draftSelectedSkillIds = if (
-                        trimmedMessages.isEmpty() && current.currentSessionId == sessionId
-                    ) {
-                        emptyList()
-                    } else {
-                        current.draftSelectedSkillIds
-                    },
-                    draftSelectedMcpServerIds = if (
-                        trimmedMessages.isEmpty() && current.currentSessionId == sessionId
-                    ) {
-                        emptyList()
-                    } else {
-                        current.draftSelectedMcpServerIds
-                    },
-                    draftInput = if (current.editingSessionId == sessionId) "" else current.draftInput,
-                    draftAttachments = if (current.editingSessionId == sessionId) {
-                        emptyList()
+            current.copy(
+                sessions = updatedSessions,
+                currentSessionId = when {
+                    trimmedMessages.isEmpty() && current.currentSessionId == sessionId -> DraftSessionId
+                    else -> current.currentSessionId
+                },
+                draftSelectedSkillIds = if (
+                    trimmedMessages.isEmpty() && current.currentSessionId == sessionId
+                ) {
+                    emptyList()
+                } else {
+                    current.draftSelectedSkillIds
+                },
+                draftSelectedMcpServerIds = if (
+                    trimmedMessages.isEmpty() && current.currentSessionId == sessionId
+                ) {
+                    emptyList()
+                } else {
+                    current.draftSelectedMcpServerIds
+                },
+                draftInput = if (current.editingSessionId == sessionId) "" else current.draftInput,
+                draftAttachments = if (current.editingSessionId == sessionId) {
+                    emptyList()
                 } else {
                     current.draftAttachments
                 },
@@ -1362,17 +1377,44 @@ class AetherViewModel(
         }
 
         if (didUpdate) {
-            if (removedSessionForPersistence) {
-                persistDeleteSession(
-                    sessionId = sessionId,
-                    sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
-                )
-            } else {
-                cleanupSharedWorkspaceFilesIfUnreferenced(
-                    sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
-                    excludedSessionIds = emptySet(),
-                )
-                updatedSessionForPersistence?.let(::persistSessionSnapshot)
+            viewModelScope.launch {
+                chatStateStore.flush()
+                val sharedWorkspaceFilePaths = withContext(Dispatchers.IO) {
+                    runCatching {
+                        runtime.chatRepository.getUnreferencedWorkspaceFilePathsForDeletedMessages(
+                            sessionId = sessionId,
+                            messageIds = removedMessageIds,
+                        )
+                    }.getOrElse { throwable ->
+                        diagnosticLogger.exception(
+                            category = "storage",
+                            event = "unreferenced_workspace_lookup_failed",
+                            throwable = throwable,
+                            level = "warn",
+                            sessionId = sessionId,
+                            details = mapOf(
+                                "lookup_scope" to "messages",
+                                "message_count" to removedMessageIds.size,
+                            ),
+                        )
+                        emptyList()
+                    }
+                }
+                if (removedSessionForPersistence) {
+                    persistDeleteSession(
+                        sessionId = sessionId,
+                        sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
+                    )
+                } else {
+                    updatedSessionForPersistence?.let { persistSessionSnapshotAndFlush(it) }
+                    if (sharedWorkspaceFilePaths.isNotEmpty()) {
+                        scheduleSessionRuntimeDataCleanup(
+                            sessionIds = emptyList(),
+                            sharedWorkspaceFilePaths = sharedWorkspaceFilePaths,
+                            mode = _uiState.value.settings.agentWorkspaceMode,
+                        )
+                    }
+                }
             }
         }
     }
@@ -2675,6 +2717,31 @@ class AetherViewModel(
         }
     }
 
+    private suspend fun persistSessionSnapshotAndFlush(
+        session: ChatSession,
+        moveToFront: Boolean = false,
+        currentSessionId: String? = null,
+    ) {
+        chatStateStore.updateAndFlush { persisted ->
+            val currentIndex = persisted.sessions.indexOfFirst { it.id == session.id }
+            val updatedSessions = persisted.sessions.toMutableList().apply {
+                if (currentIndex >= 0) {
+                    removeAt(currentIndex)
+                }
+                val insertIndex = when {
+                    moveToFront -> 0
+                    currentIndex >= 0 -> currentIndex.coerceAtMost(size)
+                    else -> 0
+                }
+                add(insertIndex, session)
+            }
+            persisted.copy(
+                sessions = updatedSessions,
+                currentSessionId = currentSessionId ?: persisted.currentSessionId,
+            )
+        }
+    }
+
     private fun persistSessionMutation(
         sessionId: String,
         transform: (ChatSession) -> ChatSession?,
@@ -2690,33 +2757,17 @@ class AetherViewModel(
         }
     }
 
-    private fun ChatSession.workspaceFilePathsForCleanup(): List<String> =
-        messages.collectWorkspaceFilePathsForCleanup().distinct()
-
-    private fun List<ChatMessage>.collectWorkspaceFilePathsForCleanup(): List<String> =
-        flatMap { message -> message.collectWorkspaceFilePathsForCleanup() }
-
-    private fun ChatMessage.collectWorkspaceFilePathsForCleanup(): List<String> =
-        attachments
-            .map { attachment -> attachment.workspacePath.trim() }
-            .filter(String::isNotEmpty) +
-            branchGroup
-                ?.branches
-                .orEmpty()
-                .flatMap { branch -> branch.collectWorkspaceFilePathsForCleanup() }
-
-    private fun persistDeleteSession(
+    private suspend fun persistDeleteSession(
         sessionId: String,
         sharedWorkspaceFilePaths: Collection<String> = emptyList(),
     ) {
-        var unreferencedSharedWorkspaceFilePaths = emptyList<String>()
-        chatStateStore.update(
+        val unreferencedSharedWorkspaceFilePaths = sharedWorkspaceFilePaths
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+        chatStateStore.updateAndFlush(
             writeIntent = PersistedChatWriteIntent.DeleteSession,
         ) { persisted ->
-            unreferencedSharedWorkspaceFilePaths = sharedWorkspaceFilePaths.unreferencedWorkspaceFilePaths(
-                sessions = persisted.sessions,
-                excludedSessionIds = setOf(sessionId),
-            )
             val updatedSessions = persisted.sessions.filterNot { it.id == sessionId }
             persisted.copy(
                 sessions = updatedSessions,
@@ -2732,39 +2783,6 @@ class AetherViewModel(
             sharedWorkspaceFilePaths = unreferencedSharedWorkspaceFilePaths,
             mode = _uiState.value.settings.agentWorkspaceMode,
         )
-    }
-
-    private fun cleanupSharedWorkspaceFilesIfUnreferenced(
-        sharedWorkspaceFilePaths: Collection<String>,
-        excludedSessionIds: Set<String>,
-    ) {
-        val unreferencedSharedWorkspaceFilePaths = sharedWorkspaceFilePaths.unreferencedWorkspaceFilePaths(
-            sessions = _uiState.value.sessions,
-            excludedSessionIds = excludedSessionIds,
-        )
-        if (unreferencedSharedWorkspaceFilePaths.isEmpty()) return
-        scheduleSessionRuntimeDataCleanup(
-            sessionIds = emptyList(),
-            sharedWorkspaceFilePaths = unreferencedSharedWorkspaceFilePaths,
-            mode = _uiState.value.settings.agentWorkspaceMode,
-        )
-    }
-
-    private fun Collection<String>.unreferencedWorkspaceFilePaths(
-        sessions: Collection<ChatSession>,
-        excludedSessionIds: Set<String>,
-    ): List<String> {
-        val candidatePaths = map(String::trim)
-            .filter(String::isNotEmpty)
-            .distinct()
-        if (candidatePaths.isEmpty()) return emptyList()
-
-        val referencedPaths = sessions
-            .asSequence()
-            .filterNot { session -> session.id in excludedSessionIds }
-            .flatMap { session -> session.workspaceFilePathsForCleanup().asSequence() }
-            .toSet()
-        return candidatePaths.filterNot(referencedPaths::contains)
     }
 
     private fun scheduleSessionRuntimeDataCleanup(

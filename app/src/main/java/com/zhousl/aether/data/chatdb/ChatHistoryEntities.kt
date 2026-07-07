@@ -64,6 +64,25 @@ data class ChatMessageSummaryEntity(
 )
 
 @Entity(
+    tableName = "chat_workspace_file_refs",
+    primaryKeys = ["sessionId", "messageId", "path"],
+    foreignKeys = [
+        ForeignKey(
+            entity = ChatMessageEntity::class,
+            parentColumns = ["sessionId", "id"],
+            childColumns = ["sessionId", "messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["path"])],
+)
+data class ChatWorkspaceFileRefEntity(
+    val sessionId: String,
+    val messageId: String,
+    val path: String,
+)
+
+@Entity(
     tableName = "chat_state_meta",
     foreignKeys = [
         ForeignKey(
@@ -80,6 +99,7 @@ data class ChatStateMetaEntity(
     val id: String = ChatStateMetaEntityId,
     val currentSessionId: String?,
     val roomMigrationComplete: Boolean,
+    val workspaceFileRefsComplete: Boolean,
 )
 
 const val ChatStateMetaEntityId = "default"
@@ -87,4 +107,5 @@ const val ChatStateMetaEntityId = "default"
 data class ChatSessionSnapshot(
     val session: ChatSessionEntity,
     val messages: List<ChatMessageEntity>,
+    val workspaceFileRefs: List<ChatWorkspaceFileRefEntity> = emptyList(),
 )
