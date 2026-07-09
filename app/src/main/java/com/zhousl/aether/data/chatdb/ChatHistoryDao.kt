@@ -43,12 +43,12 @@ interface ChatHistoryDao {
     fun observeMessageStatsForSessions(sessionIds: List<String>): Flow<List<ChatSessionMessageStatsEntity>>
 
     @Query("""
-        SELECT sessionId, messageJson
+        SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion, length(messageJson) AS messageJsonLength
         FROM chat_messages
         WHERE hasUsageStatistics = 1
         ORDER BY sessionId ASC, position ASC
     """)
-    suspend fun getUsageStatisticsMessageJson(): List<ChatMessageUsageStatisticsJsonEntity>
+    suspend fun getUsageStatisticsMessageSummaries(): List<ChatMessageSummaryEntity>
 
     @Query("""
         SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion, length(messageJson) AS messageJsonLength

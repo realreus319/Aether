@@ -71,11 +71,6 @@ data class ChatSessionMessageStatsEntity(
     val lastMessageAtMillis: Long?,
 )
 
-data class ChatMessageUsageStatisticsJsonEntity(
-    val sessionId: String,
-    val messageJson: String,
-)
-
 @Entity(
     tableName = "chat_workspace_file_refs",
     primaryKeys = ["sessionId", "messageId", "path"],

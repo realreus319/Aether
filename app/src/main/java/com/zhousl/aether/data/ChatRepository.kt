@@ -10,7 +10,6 @@ import com.zhousl.aether.data.chatdb.ChatHistoryDao
 import com.zhousl.aether.data.chatdb.ChatHistoryDatabase
 import com.zhousl.aether.data.chatdb.ChatMessageEntity
 import com.zhousl.aether.data.chatdb.ChatMessageSummaryEntity
-import com.zhousl.aether.data.chatdb.ChatMessageUsageStatisticsJsonEntity
 import com.zhousl.aether.data.chatdb.ChatSessionEntity
 import com.zhousl.aether.data.chatdb.ChatSessionMessageStatsEntity
 import com.zhousl.aether.data.chatdb.ChatSessionSnapshot
@@ -196,12 +195,20 @@ class ChatRepository(
 
     suspend fun getUsageStatisticsSnapshot(): List<ChatUsageStatisticsSnapshot> {
         migrateLegacyChatStateIfNeeded()
-        return chatHistoryDao.getUsageStatisticsMessageJson().mapNotNull { row ->
-            val statistics = row.parseUsageStatisticsOrNull() ?: return@mapNotNull null
-            ChatUsageStatisticsSnapshot(
-                sessionId = row.sessionId,
-                statistics = statistics,
-            )
+        return database.withTransaction {
+            chatHistoryDao.getUsageStatisticsMessageSummaries().mapNotNull { summary ->
+                val entity = try {
+                    chatHistoryDao.loadMessageEntityInChunks(summary)
+                } catch (throwable: Exception) {
+                    if (throwable is CancellationException) throw throwable
+                    null
+                } ?: return@mapNotNull null
+                val statistics = entity.messageJson.parseUsageStatisticsOrNull() ?: return@mapNotNull null
+                ChatUsageStatisticsSnapshot(
+                    sessionId = summary.sessionId,
+                    statistics = statistics,
+                )
+            }
         }
     }
 
@@ -963,9 +970,9 @@ internal fun ChatMessage.toJson(): JSONObject = JSONObject().apply {
     put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
 }
 
-private fun ChatMessageUsageStatisticsJsonEntity.parseUsageStatisticsOrNull(): ChatUsageStatistics? =
+private fun String.parseUsageStatisticsOrNull(): ChatUsageStatistics? =
     runCatching {
-        parseUsageStatistics(JSONObject(messageJson).optJSONObject("usageStatistics"))
+        parseUsageStatistics(JSONObject(this).optJSONObject("usageStatistics"))
     }.getOrNull()
 
 private fun parseUsageStatistics(json: JSONObject?): ChatUsageStatistics? {
