@@ -1,9 +1,7 @@
 package com.zhousl.aether.data
 
 import android.os.SystemClock
-import com.zhousl.aether.runtime.RuntimeFilesystemTool
 import com.zhousl.aether.runtime.RuntimeRouter
-import com.zhousl.aether.runtime.RuntimeShellTool
 import java.io.File
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -43,8 +41,7 @@ class AetherAgent(
     private val diagnosticLogger: AetherDiagnosticLogger = AetherDiagnosticLogger.NoOp,
     private val onParallelToolCallsUnsupported: suspend (String) -> Unit = {},
 ) {
-    private val filesystemTool = RuntimeFilesystemTool(runtimeRouter)
-    private val shellTool = RuntimeShellTool(runtimeRouter)
+    private val toolExecutor = AetherToolExecutor(runtimeRouter)
 
     suspend fun runTurn(
         settings: AppSettings,
@@ -506,38 +503,22 @@ class AetherAgent(
         onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ): String {
         return when (toolCall.name) {
-            "read" -> filesystemTool.executeRead(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "edit" -> filesystemTool.executeEdit(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "write" -> filesystemTool.executeWrite(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "grep" -> filesystemTool.executeGrep(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "find" -> filesystemTool.executeFind(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "ls" -> filesystemTool.executeLs(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory)
-            )
-            "bash" -> shellTool.execute(
-                settings,
-                injectDefaultWorkingDirectory(toolCall.arguments, workspaceDirectory),
+            "read",
+            "edit",
+            "write",
+            "grep",
+            "find",
+            "ls",
+            "bash",
+            "fetch_bash_output",
+            "kill_bash",
+            "sleep" -> toolExecutor.execute(
+                settings = settings,
+                workspaceDirectory = workspaceDirectory,
+                toolName = toolCall.name,
+                argumentsJson = toolCall.arguments,
                 onProgress = onToolProgress,
-            )
-            "fetch_bash_output" -> shellTool.fetch(settings, toolCall.arguments)
-            "kill_bash" -> shellTool.kill(settings, toolCall.arguments)
-            "sleep" -> executeSleep(toolCall.arguments)
+            ).rawOutput
             "activate_skill" -> executeActivateSkill(
                 argumentsJson = toolCall.arguments,
                 availableSkills = availableSkills,
@@ -604,14 +585,7 @@ class AetherAgent(
     private fun sanitizeToolOutputForConversation(
         toolName: String,
         output: String,
-    ): String {
-        if (toolName != "agent_display") return output
-        val parsed = runCatching { JSONObject(output) }.getOrNull() ?: return output
-        if (!parsed.has("screenshot_base64")) return output
-        parsed.remove("screenshot_base64")
-        parsed.put("screenshot_injected_into_next_model_request", true)
-        return parsed.toString()
-    }
+    ): String = AetherToolExecutor.sanitizeToolOutputForConversation(toolName, output)
 
     private fun buildAgentDisplayScreenshotMessage(output: String): LlmMessage? {
         val parsed = runCatching { JSONObject(output) }.getOrNull() ?: return null

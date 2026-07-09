@@ -7,7 +7,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --outfile=dist/bridge.mjs",
+    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --banner:js=\"import { createRequire } from 'node:module';const require = createRequire(import.meta.url);\" --outfile=dist/bridge.mjs",
     "check": "tsc --noEmit",
     "test:ping": "node dist/bridge.mjs --ping"
   },

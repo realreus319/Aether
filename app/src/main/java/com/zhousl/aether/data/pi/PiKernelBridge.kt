@@ -4,7 +4,11 @@ import com.zhousl.aether.data.AetherDiagnosticLogger
 import com.zhousl.aether.data.DiagnosticRedactor
 import com.zhousl.aether.runtime.AlpineRuntime
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -31,6 +35,7 @@ class PiKernelBridge(
     private val mutex = Mutex()
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<PiBridgeFrame>>()
     private val eventHandlers = ConcurrentHashMap<String, suspend (String, JSONObject) -> Unit>()
+    private val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var process: Process? = null
     private var writer: BufferedWriter? = null
 
@@ -69,8 +74,17 @@ class PiKernelBridge(
             timeoutMillis = PiBridgePingTimeoutMillis,
         )
 
+    suspend fun sendHostToolResult(payload: JSONObject) {
+        sendNotification(type = "host_tool_result", payload = payload)
+    }
+
+    suspend fun sendHostToolProgress(payload: JSONObject) {
+        sendNotification(type = "host_tool_progress", payload = payload)
+    }
+
     suspend fun stop() = withContext(Dispatchers.IO) {
         mutex.withLock {
+            eventScope.coroutineContext.cancelChildren()
             pendingRequests.values.forEach { deferred ->
                 deferred.completeExceptionally(PiBridgeException("Pi bridge stopped."))
             }
@@ -80,6 +94,23 @@ class PiKernelBridge(
             runCatching { process?.destroy() }
             process = null
             writer = null
+        }
+    }
+
+    private suspend fun sendNotification(
+        type: String,
+        payload: JSONObject = JSONObject(),
+    ) = withContext(Dispatchers.IO) {
+        val activeWriter = ensureStartedLocked()
+        val line = PiBridgeRequest(
+            id = nextRequestId(type),
+            type = type,
+            payload = payload,
+        ).toJsonLine()
+        synchronized(activeWriter) {
+            activeWriter.write(line)
+            activeWriter.newLine()
+            activeWriter.flush()
         }
     }
 
@@ -248,8 +279,20 @@ class PiKernelBridge(
             "response", "error" -> pendingRequests.remove(frame.id)?.complete(frame)
             "event" -> {
                 val handler = eventHandlers[frame.id] ?: return
-                kotlinx.coroutines.runBlocking {
-                    handler(frame.event, frame.payload)
+                eventScope.launch {
+                    runCatching {
+                        handler(frame.event, frame.payload)
+                    }.onFailure { throwable ->
+                        diagnosticLogger.exception(
+                            category = "pi_bridge",
+                            event = "event_handler_failed",
+                            throwable = throwable,
+                            details = mapOf(
+                                "request_id" to frame.id,
+                                "event" to frame.event,
+                            ),
+                        )
+                    }
                 }
             }
             else -> diagnosticLogger.event(

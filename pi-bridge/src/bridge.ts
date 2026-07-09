@@ -5,20 +5,32 @@ import {
   createProvider,
   fauxAssistantMessage,
   fauxProvider,
+  fauxToolCall,
   type AssistantMessage,
   type AssistantMessageEvent,
   type Context,
+  type ImageContent,
   type Message,
   type Model,
   type MutableModels,
   type ProviderStreams,
   type SimpleStreamOptions,
+  type TextContent,
   type Usage,
 } from "@earendil-works/pi-ai";
+import {
+  AgentHarness,
+  InMemorySessionRepo,
+  NodeExecutionEnv,
+  type AgentMessage,
+  type AgentTool,
+  type AgentToolResult,
+} from "@earendil-works/pi-agent-core/node";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { googleVertexApi } from "@earendil-works/pi-ai/api/google-vertex.lazy";
+import type { TSchema } from "typebox";
 
 const BRIDGE_VERSION = "2.0.0-alpha.0";
 const PI_AI_VERSION = "0.80.3";
@@ -44,10 +56,27 @@ interface ModelConfig {
   context_window?: number;
   max_tokens?: number;
   faux_response?: string;
+  faux_tool_calls?: Array<{ name: string; arguments: JsonObject; id?: string }>;
 }
 
-const activeControllers = new Map<string, AbortController>();
+interface HostToolDefinition {
+  name: string;
+  description: string;
+  parameters?: JsonObject;
+  execution_mode?: "sequential" | "parallel";
+}
+
+interface PendingHostToolRequest {
+  resolve: (result: AgentToolResult<JsonObject>) => void;
+  reject: (error: Error) => void;
+  onUpdate?: (partialResult: AgentToolResult<JsonObject>) => void;
+  timeout: NodeJS.Timeout;
+}
+
+const activeAborters = new Map<string, () => void | Promise<unknown>>();
+const pendingHostToolRequests = new Map<string, PendingHostToolRequest>();
 let defaultModelConfig: ModelConfig | undefined;
+let hostToolCounter = 0;
 
 function writeFrame(frame: JsonObject): void {
   output.write(`${JSON.stringify(frame)}\n`);
@@ -124,7 +153,24 @@ function normalizeModelConfig(rawValue: unknown): ModelConfig {
     context_window: asNumber(raw.context_window, 128000),
     max_tokens: asNumber(raw.max_tokens, 16384),
     faux_response: asString(raw.faux_response),
+    faux_tool_calls: normalizeFauxToolCalls(raw.faux_tool_calls),
   };
+}
+
+function normalizeFauxToolCalls(rawValue: unknown): Array<{ name: string; arguments: JsonObject; id?: string }> {
+  if (!Array.isArray(rawValue)) return [];
+  return rawValue.flatMap((rawCall) => {
+    const raw = asObject(rawCall);
+    const name = asString(raw.name, asString(raw.tool_name)).trim();
+    if (!name) return [];
+    return [
+      {
+        name,
+        arguments: asObject(raw.arguments),
+        id: asString(raw.id).trim() || undefined,
+      },
+    ];
+  });
 }
 
 function apiStreamsFor(piApi: string): ProviderStreams {
@@ -179,7 +225,19 @@ function buildModels(config: ModelConfig): { models: MutableModels; model: Model
       ],
       tokensPerSecond: 0,
     });
-    faux.setResponses([fauxAssistantMessage(config.faux_response || "ok")]);
+    if (config.faux_tool_calls && config.faux_tool_calls.length > 0) {
+      faux.setResponses([
+        fauxAssistantMessage(
+          config.faux_tool_calls.map((toolCall) =>
+            fauxToolCall(toolCall.name, toolCall.arguments, toolCall.id ? { id: toolCall.id } : undefined),
+          ),
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage(config.faux_response || "ok"),
+      ]);
+    } else {
+      faux.setResponses([fauxAssistantMessage(config.faux_response || "ok")]);
+    }
     models.setProvider(faux.provider);
     const model = faux.getModel(config.model_id) ?? faux.getModel();
     return { models, model };
@@ -391,11 +449,305 @@ function streamOptionsFor(payload: JsonObject, signal: AbortSignal): SimpleStrea
   return options;
 }
 
+function normalizeHostToolDefinitions(rawTools: unknown): HostToolDefinition[] {
+  if (!Array.isArray(rawTools)) return [];
+  return rawTools
+    .map((rawTool): HostToolDefinition | undefined => {
+      const raw = asObject(rawTool);
+      const name = asString(raw.name).trim();
+      if (!name) return undefined;
+      const executionMode = asString(raw.execution_mode, asString(raw.executionMode)).trim();
+      return {
+        name,
+        description: asString(raw.description),
+        parameters: asObject(raw.parameters),
+        execution_mode: executionMode === "sequential" ? "sequential" : "parallel",
+      };
+    })
+    .filter((tool): tool is HostToolDefinition => Boolean(tool));
+}
+
+function hostToolSchema(definition: HostToolDefinition): TSchema {
+  const schema = asObject(definition.parameters);
+  if (asString(schema.type)) return schema as unknown as TSchema;
+  return {
+    type: "object",
+    properties: {},
+    additionalProperties: true,
+  } as unknown as TSchema;
+}
+
+function normalizeToolArguments(args: unknown): JsonObject {
+  if (typeof args === "string") {
+    try {
+      return asObject(JSON.parse(args));
+    } catch {
+      return {};
+    }
+  }
+  return asObject(args);
+}
+
+function normalizeToolContent(rawContent: unknown, fallbackText: string): Array<TextContent | ImageContent> {
+  if (!Array.isArray(rawContent)) return [{ type: "text", text: fallbackText }];
+  const content = rawContent
+    .map((rawPart): TextContent | ImageContent | undefined => {
+      const part = asObject(rawPart);
+      const type = asString(part.type);
+      if (type === "image") {
+        const data = asString(part.data).trim();
+        if (!data) return undefined;
+        return {
+          type: "image",
+          mimeType: asString(part.mime_type, asString(part.mimeType, "application/octet-stream")),
+          data,
+        };
+      }
+      if (type === "text") {
+        return { type: "text", text: asString(part.text) };
+      }
+      return undefined;
+    })
+    .filter((part): part is TextContent | ImageContent => Boolean(part));
+  return content.length > 0 ? content : [{ type: "text", text: fallbackText }];
+}
+
+function hostToolResultFromPayload(payload: JsonObject): AgentToolResult<JsonObject> {
+  const outputText = asString(payload.output_json, asString(payload.output, ""));
+  const details = {
+    ...asObject(payload.details),
+    tool_request_id: asString(payload.tool_request_id),
+    tool_call_id: asString(payload.tool_call_id),
+    tool_name: asString(payload.tool_name),
+    arguments_json: asString(payload.arguments_json),
+    output_json: outputText,
+    raw_output_json: asString(payload.raw_output_json),
+    is_error: asBoolean(payload.is_error, false),
+  };
+  return {
+    content: normalizeToolContent(payload.content, outputText),
+    details,
+    terminate: asBoolean(payload.terminate, false) || undefined,
+  };
+}
+
+function resolveHostToolResult(payload: JsonObject): boolean {
+  const toolRequestId = asString(payload.tool_request_id).trim();
+  const pending = toolRequestId ? pendingHostToolRequests.get(toolRequestId) : undefined;
+  if (!pending) return false;
+  pendingHostToolRequests.delete(toolRequestId);
+  clearTimeout(pending.timeout);
+  pending.resolve(hostToolResultFromPayload(payload));
+  return true;
+}
+
+function applyHostToolProgress(payload: JsonObject): boolean {
+  const toolRequestId = asString(payload.tool_request_id).trim();
+  const pending = toolRequestId ? pendingHostToolRequests.get(toolRequestId) : undefined;
+  if (!pending) return false;
+  pending.onUpdate?.(hostToolResultFromPayload(payload));
+  return true;
+}
+
+function requestHostTool(
+  runRequestId: string,
+  sessionId: string,
+  toolName: string,
+  toolCallId: string,
+  params: JsonObject,
+  signal?: AbortSignal,
+  onUpdate?: (partialResult: AgentToolResult<JsonObject>) => void,
+): Promise<AgentToolResult<JsonObject>> {
+  const toolRequestId = `host-tool-${Date.now()}-${++hostToolCounter}`;
+  const argumentsJson = JSON.stringify(params);
+  writeEvent(runRequestId, "host_tool_request", {
+    tool_request_id: toolRequestId,
+    session_id: sessionId,
+    tool_call_id: toolCallId,
+    tool_name: toolName,
+    arguments: params,
+    arguments_json: argumentsJson,
+  });
+  return new Promise<AgentToolResult<JsonObject>>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Host tool execution aborted."));
+      return;
+    }
+    const timeout = setTimeout(() => {
+      pendingHostToolRequests.delete(toolRequestId);
+      reject(new Error(`Host tool ${toolName} timed out waiting for Kotlin result.`));
+    }, 10 * 60 * 1000);
+    const abortListener = () => {
+      clearTimeout(timeout);
+      pendingHostToolRequests.delete(toolRequestId);
+      reject(new Error("Host tool execution aborted."));
+    };
+    signal?.addEventListener("abort", abortListener, { once: true });
+    pendingHostToolRequests.set(toolRequestId, {
+      resolve: (result) => {
+        signal?.removeEventListener("abort", abortListener);
+        resolve(result);
+      },
+      reject: (error) => {
+        signal?.removeEventListener("abort", abortListener);
+        reject(error);
+      },
+      onUpdate,
+      timeout,
+    });
+  });
+}
+
+function createHostTool(runRequestId: string, sessionId: string, definition: HostToolDefinition): AgentTool<TSchema, JsonObject> {
+  return {
+    label: definition.name,
+    name: definition.name,
+    description: definition.description,
+    parameters: hostToolSchema(definition),
+    prepareArguments: normalizeToolArguments,
+    executionMode: definition.execution_mode,
+    execute: async (toolCallId, params, signal, onUpdate) =>
+      requestHostTool(runRequestId, sessionId, definition.name, toolCallId, normalizeToolArguments(params), signal, onUpdate),
+  };
+}
+
+function toolTextOutput(result: AgentToolResult<JsonObject> | undefined): string {
+  if (!result) return "";
+  return result.content
+    .filter((part): part is TextContent => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+function toolEventPayload(
+  toolCallId: string,
+  toolName: string,
+  args: unknown,
+  result?: AgentToolResult<JsonObject>,
+  isError?: boolean,
+): JsonObject {
+  const argsObject = normalizeToolArguments(args);
+  const details = asObject(result?.details);
+  return {
+    id: toolCallId,
+    name: toolName,
+    arguments: argsObject,
+    arguments_json: JSON.stringify(argsObject),
+    output_json: asString(details.output_json, toolTextOutput(result)),
+    raw_output_json: asString(details.raw_output_json),
+    content: result?.content ?? [],
+    details,
+    is_error: isError ?? asBoolean(details.is_error, false),
+  };
+}
+
+function promptFromLastUserMessage(messages: Message[]): {
+  history: AgentMessage[];
+  text: string;
+  images: ImageContent[];
+} {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") {
+    return { history: messages as AgentMessage[], text: "", images: [] };
+  }
+  const content = last.content;
+  if (typeof content === "string") {
+    return { history: messages.slice(0, -1) as AgentMessage[], text: content, images: [] };
+  }
+  const text = content
+    .filter((part): part is TextContent => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+  const images = content.filter((part): part is ImageContent => part.type === "image");
+  return { history: messages.slice(0, -1) as AgentMessage[], text, images };
+}
+
+function thinkingLevelFor(payload: JsonObject): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+  const reasoning = asString(payload.reasoning).trim();
+  if (!reasoning) return undefined;
+  if (["off", "minimal", "low", "medium", "high", "xhigh"].includes(reasoning)) {
+    return reasoning as "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  }
+  return undefined;
+}
+
+function emitHarnessEvent(
+  requestId: string,
+  event: Parameters<AgentHarness["subscribe"]>[0] extends (event: infer TEvent, signal?: AbortSignal) => unknown ? TEvent : never,
+  toolArgsById: Map<string, unknown>,
+): void {
+  switch (event.type) {
+    case "message_update":
+      if (event.message.role === "assistant") {
+        if (event.assistantMessageEvent.type === "text_delta" || event.assistantMessageEvent.type === "thinking_delta") {
+          emitStreamEvent(requestId, event.assistantMessageEvent);
+        }
+      }
+      break;
+    case "tool_execution_start":
+      toolArgsById.set(event.toolCallId, event.args);
+      writeEvent(requestId, "tool_call_start", toolEventPayload(event.toolCallId, event.toolName, event.args));
+      break;
+    case "tool_execution_update":
+      writeEvent(requestId, "tool_call_delta", toolEventPayload(event.toolCallId, event.toolName, event.args, event.partialResult));
+      break;
+    case "tool_execution_end":
+      writeEvent(
+        requestId,
+        "tool_call_end",
+        toolEventPayload(event.toolCallId, event.toolName, toolArgsById.get(event.toolCallId) ?? {}, event.result, event.isError),
+      );
+      toolArgsById.delete(event.toolCallId);
+      break;
+  }
+}
+
+async function runHarnessTurn(id: string, payload: JsonObject): Promise<JsonObject> {
+  const config = normalizeModelConfig(payload.model_config ?? defaultModelConfig);
+  const { models, model } = buildModels(config);
+  const sessionId = asString(payload.session_id, id);
+  const messages = normalizeMessages(payload.messages);
+  const prompt = promptFromLastUserMessage(messages);
+  const sessionRepo = new InMemorySessionRepo();
+  const session = await sessionRepo.create({ id: sessionId });
+  for (const message of prompt.history) {
+    await session.appendMessage(message);
+  }
+  const tools = normalizeHostToolDefinitions(payload.host_tools).map((tool) => createHostTool(id, sessionId, tool));
+  const harness = new AgentHarness({
+    models,
+    env: new NodeExecutionEnv({ cwd: asString(payload.workspace_directory, process.cwd()) || process.cwd() }),
+    session,
+    model,
+    systemPrompt: asString(payload.system_prompt),
+    tools,
+    thinkingLevel: thinkingLevelFor(payload),
+    streamOptions: {
+      headers: normalizeHeaders(payload.headers),
+    },
+  });
+  const toolArgsById = new Map<string, unknown>();
+  harness.subscribe((event) => emitHarnessEvent(id, event, toolArgsById));
+  harness.on("tool_result", (event) => {
+    const details = asObject(event.details);
+    if (asBoolean(details.is_error, false)) return { isError: true };
+    return undefined;
+  });
+  activeAborters.set(id, () => harness.abort());
+  try {
+    const message = await harness.prompt(prompt.text, prompt.images.length > 0 ? { images: prompt.images } : undefined);
+    await harness.waitForIdle();
+    return assistantPayload(message);
+  } finally {
+    activeAborters.delete(id);
+  }
+}
+
 async function runSimpleCompletion(id: string, payload: JsonObject, stream: boolean): Promise<JsonObject> {
   const config = normalizeModelConfig(payload.model_config ?? defaultModelConfig);
   const { models, model } = buildModels(config);
   const controller = new AbortController();
-  activeControllers.set(id, controller);
+  activeAborters.set(id, () => controller.abort());
   try {
     const context = buildContext(payload);
     const options = streamOptionsFor(payload, controller.signal);
@@ -410,7 +762,7 @@ async function runSimpleCompletion(id: string, payload: JsonObject, stream: bool
     const message = await models.completeSimple(model, context, options);
     return assistantPayload(message);
   } finally {
-    activeControllers.delete(id);
+    activeAborters.delete(id);
   }
 }
 
@@ -436,20 +788,24 @@ async function handleRequest(request: BridgeRequest): Promise<void> {
       writeResponse(id, await runSimpleCompletion(id, payload, asBoolean(payload.stream, false)));
       return;
     case "run_turn":
-      writeResponse(id, await runSimpleCompletion(id, payload, true));
+      writeResponse(id, await runHarnessTurn(id, payload));
       return;
     case "start_session":
     case "steer":
     case "follow_up":
-    case "host_tool_result":
-    case "host_tool_progress":
       writeResponse(id, { accepted: true });
+      return;
+    case "host_tool_result":
+      writeResponse(id, { accepted: resolveHostToolResult(payload) });
+      return;
+    case "host_tool_progress":
+      writeResponse(id, { accepted: applyHostToolProgress(payload) });
       return;
     case "abort": {
       const targetId = asString(payload.request_id, asString(payload.target_id));
-      const controller = targetId ? activeControllers.get(targetId) : undefined;
-      controller?.abort();
-      writeResponse(id, { aborted: Boolean(controller) });
+      const aborter = targetId ? activeAborters.get(targetId) : undefined;
+      await aborter?.();
+      writeResponse(id, { aborted: Boolean(aborter) });
       return;
     }
     default:

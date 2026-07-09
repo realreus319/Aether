@@ -11,6 +11,7 @@ import com.zhousl.aether.data.AgentExtensionsRepository
 import com.zhousl.aether.data.AgentModeController
 import com.zhousl.aether.data.AgentSkillManager
 import com.zhousl.aether.data.AetherDiagnosticLogger
+import com.zhousl.aether.data.AetherToolExecutor
 import com.zhousl.aether.data.ChatRepository
 import com.zhousl.aether.data.RootSetupController
 import com.zhousl.aether.data.ChatStateStore
@@ -112,10 +113,13 @@ class AetherAppRuntime(
         diagnosticLogger = diagnosticLogger,
     )
     val piCompletionClient = PiCompletionClient(piKernelBridge)
-    val piAgentRunner = PiAgentRunner(piKernelBridge)
     val runtimeRouter = RuntimeRouter(
         termuxRuntime = termuxRuntime,
         alpineRuntime = alpineRuntime,
+    )
+    val piAgentRunner = PiAgentRunner(
+        bridge = piKernelBridge,
+        toolExecutor = AetherToolExecutor(runtimeRouter),
     )
     val rootSetupController = RootSetupController(
         context = application,
