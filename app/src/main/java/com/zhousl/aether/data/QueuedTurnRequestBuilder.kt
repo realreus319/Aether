@@ -1,6 +1,7 @@
 package com.zhousl.aether.data
 
 import com.zhousl.aether.ui.ChatMessage
+import com.zhousl.aether.ui.ChatSession
 import com.zhousl.aether.ui.syncActiveBranches
 
 internal class QueuedTurnRequestBuilder(
@@ -9,6 +10,7 @@ internal class QueuedTurnRequestBuilder(
     fun build(
         sessionId: String,
         queuedInput: ChatMessage,
+        baseMessages: List<ChatMessage> = emptyList(),
         baseSettings: AppSettings,
         providerConfigs: List<LlmProviderConfig>,
     ): SessionTurnRequest? {
@@ -20,8 +22,10 @@ internal class QueuedTurnRequestBuilder(
 
             val updatedSessions = persisted.sessions.toMutableList()
             val session = updatedSessions.removeAt(sessionIndex)
-            val updatedSession = session.withDerivedMessages(
-                syncActiveBranches(session.messages + queuedInput)
+            val updatedSession = buildQueuedTurnSession(
+                session = session,
+                queuedInput = queuedInput,
+                baseMessages = baseMessages,
             )
             selection = QueuedTurnSelection(
                 requestMessages = updatedSession.messages,
@@ -61,5 +65,16 @@ internal class QueuedTurnRequestBuilder(
         val activeMcpServerIds: List<String> = emptyList(),
         val agentModeEnabled: Boolean = false,
         val selectedModelKey: String = "",
+    )
+}
+
+internal fun buildQueuedTurnSession(
+    session: ChatSession,
+    queuedInput: ChatMessage,
+    baseMessages: List<ChatMessage> = emptyList(),
+): ChatSession {
+    val currentMessages = session.messages.ifEmpty { baseMessages }
+    return session.withDerivedMessages(
+        syncActiveBranches(currentMessages + queuedInput)
     )
 }

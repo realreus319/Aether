@@ -136,6 +136,7 @@ import com.zhousl.aether.data.AgentModeAuthorizationState
 import com.zhousl.aether.data.AgentModeDisplayState
 import com.zhousl.aether.data.AgentWorkspaceMode
 import com.zhousl.aether.data.AutomaticModelPurpose
+import com.zhousl.aether.data.ChatUsageStatisticsSnapshot
 import com.zhousl.aether.data.AppLanguage
 import com.zhousl.aether.data.AppThemeMode
 import com.zhousl.aether.data.LlmProvider
@@ -406,7 +407,7 @@ fun SettingsScreen(
     defaultCompactingModelKey: String,
     agentModeDisplayState: AgentModeDisplayState,
     providerConfigs: List<LlmProviderConfig>,
-    sessions: List<ChatSession>,
+    usageStatisticsSnapshots: List<ChatUsageStatisticsSnapshot>,
     scheduledTasks: List<ScheduledTask>,
     termuxSetupState: TermuxSetupState,
     alpineSetupState: LocalRuntimeSetupState,
@@ -793,7 +794,7 @@ fun SettingsScreen(
                 skillCount = installedSkills.size,
                 mcpServerCount = mcpServers.size,
                 scheduledTaskCount = scheduledTasks.size,
-                statisticsSummary = buildSettingsStatisticsSummary(sessions),
+                statisticsSummary = buildSettingsStatisticsSummary(usageStatisticsSnapshots),
                 onReplayOnboarding = ::persistAndReplayOnboarding,
                 onNavigate = { page ->
                     if (page == SettingsPage.AgentMode && !termuxSetupState.isReady) {
@@ -1142,7 +1143,7 @@ fun SettingsScreen(
 
             SettingsPage.Statistics -> StatisticsSettingsPage(
                 title = stringResource(R.string.settings_statistics),
-                sessions = sessions,
+                usageStatisticsSnapshots = usageStatisticsSnapshots,
                 onBack = { currentPage = SettingsPage.Hub.name },
             )
 
@@ -1404,10 +1405,10 @@ private fun SettingsHub(
 @Composable
 private fun StatisticsSettingsPage(
     title: String,
-    sessions: List<ChatSession>,
+    usageStatisticsSnapshots: List<ChatUsageStatisticsSnapshot>,
     onBack: () -> Unit,
 ) {
-    val report = remember(sessions) { buildUsageStatisticsReport(sessions) }
+    val report = remember(usageStatisticsSnapshots) { buildUsageStatisticsReport(usageStatisticsSnapshots) }
     SubPageScaffold(title = title, onBack = onBack) {
         SettingsCardGroup {
             Column(
@@ -1909,8 +1910,10 @@ private fun HistoryPeakRow(
 }
 
 @Composable
-private fun buildSettingsStatisticsSummary(sessions: List<ChatSession>): String {
-    val report = buildUsageStatisticsReport(sessions)
+private fun buildSettingsStatisticsSummary(
+    usageStatisticsSnapshots: List<ChatUsageStatisticsSnapshot>,
+): String {
+    val report = buildUsageStatisticsReport(usageStatisticsSnapshots)
     return if (report.turnCount == 0) {
         ""
     } else {
@@ -1922,9 +1925,10 @@ private fun buildSettingsStatisticsSummary(sessions: List<ChatSession>): String 
     }
 }
 
-private fun buildUsageStatisticsReport(sessions: List<ChatSession>): UsageStatisticsReport {
-    val usageMessages = sessions.flatMap { it.messages }.filter { it.usageStatistics != null }
-    val stats = usageMessages.mapNotNull { it.usageStatistics }
+private fun buildUsageStatisticsReport(
+    usageStatisticsSnapshots: List<ChatUsageStatisticsSnapshot>,
+): UsageStatisticsReport {
+    val stats = usageStatisticsSnapshots.map { it.statistics }
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
     val daily = (13 downTo 0).map { daysAgo ->
@@ -1961,7 +1965,7 @@ private fun buildUsageStatisticsReport(sessions: List<ChatSession>): UsageStatis
         inputTokens = stats.sumOf { it.inputTokens ?: 0L },
         outputTokens = stats.sumOf { it.outputTokens ?: 0L },
         reasoningTokens = stats.sumOf { it.reasoningTokens ?: 0L },
-        sessionCount = sessions.count { session -> session.messages.any { it.usageStatistics != null } },
+        sessionCount = usageStatisticsSnapshots.map { it.sessionId }.distinct().size,
         turnCount = stats.size,
         dailyTokenUsage = daily,
         peakDay = daily.maxByOrNull { it.tokens }?.takeIf { it.tokens > 0L },

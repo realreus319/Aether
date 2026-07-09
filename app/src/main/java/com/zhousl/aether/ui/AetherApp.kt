@@ -183,6 +183,12 @@ fun AetherApp(
         AetherLocaleManager.applyIfChanged(context, uiState.settings.language)
     }
 
+    LaunchedEffect(uiState.currentScreen) {
+        if (uiState.currentScreen == AppScreen.Settings) {
+            viewModel.refreshUsageStatisticsSnapshots()
+        }
+    }
+
     val localizedContext = remember(context, uiState.settings.language) {
         AetherLocaleManager.localizedContext(context, uiState.settings.language)
     }
@@ -714,7 +720,7 @@ private fun AetherAppContent(
                     defaultCompactingModelKey = uiState.settings.defaultCompactingModelKey,
                     agentModeDisplayState = uiState.agentModeDisplayState,
                     providerConfigs = uiState.providerConfigs,
-                    sessions = uiState.sessions,
+                    usageStatisticsSnapshots = uiState.usageStatisticsSnapshots,
                     scheduledTasks = uiState.scheduledTasks,
                     termuxSetupState = effectiveTermuxSetupState,
                     alpineSetupState = uiState.alpineSetupState,

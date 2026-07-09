@@ -205,11 +205,19 @@ class ChatStateStore(
     ): PersistedChatState {
         val localSessionsById = localState.sessions.associateBy { it.id }
         val repositorySessionIds = repositoryState.sessions.mapTo(mutableSetOf()) { it.id }
+        val mergedSessionIds = repositorySessionIds + localSessionsById.keys
+        val currentSessionId = localState.currentSessionId
+            .takeIf { id -> id != DraftSessionId && id in mergedSessionIds }
+            ?: repositoryState.currentSessionId
+                .takeIf { id -> id != DraftSessionId && id in mergedSessionIds }
+            ?: repositoryState.sessions.firstOrNull()?.id
+            ?: localState.sessions.firstOrNull()?.id
+            ?: DraftSessionId
         val mergedSessions = buildList(repositoryState.sessions.size + localState.sessions.size) {
             repositoryState.sessions.forEach { repositorySession ->
                 val localSession = localSessionsById[repositorySession.id]
                 add(
-                    if (localSession == null) {
+                    if (localSession == null || repositorySession.id != currentSessionId) {
                         repositorySession
                     } else {
                         localSession.withDerivedMessages(
@@ -227,12 +235,6 @@ class ChatStateStore(
                 }
             }
         }
-        val currentSessionId = localState.currentSessionId
-            .takeIf { id -> id != DraftSessionId && mergedSessions.any { it.id == id } }
-            ?: repositoryState.currentSessionId
-                .takeIf { id -> id != DraftSessionId && mergedSessions.any { it.id == id } }
-            ?: mergedSessions.firstOrNull()?.id
-            ?: DraftSessionId
         return PersistedChatState(
             sessions = mergedSessions,
             currentSessionId = currentSessionId,

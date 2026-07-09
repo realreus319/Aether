@@ -27,6 +27,7 @@ internal object ChatMessageEntityMapper {
             responseGroupId = message.responseGroupId,
             displayKind = message.displayKind.name,
             messageSchemaVersion = CurrentMessageSchemaVersion,
+            hasUsageStatistics = message.usageStatistics != null,
         )
     }
 

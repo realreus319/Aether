@@ -148,6 +148,7 @@ class AetherAppRuntime(
         settingsRepository = settingsRepository,
         extensionsRepository = extensionsRepository,
         chatStateStore = chatStateStore,
+        chatRepository = chatRepository,
         bashTool = bashTool,
         runtimeRouter = runtimeRouter,
         workspaceFileBridge = workspaceFileBridge,

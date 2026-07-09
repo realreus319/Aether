@@ -14,6 +14,8 @@ internal fun ChatSession.withDerivedMessages(
         title = if (hasCustomTitle) title else metadata.first,
         preview = metadata.second,
         messages = syncActiveBranches(messages),
+        messageCount = messages.size,
+        lastMessageAtMillis = messages.maxOfOrNull { it.createdAtMillis },
     )
 }
 

@@ -5,6 +5,7 @@ import com.zhousl.aether.data.AgentModeAuthorizationState
 import com.zhousl.aether.data.AgentModeDisplayState
 import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.AppUpdateRelease
+import com.zhousl.aether.data.ChatUsageStatisticsSnapshot
 import com.zhousl.aether.data.InstalledSkill
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.McpServerConfig
@@ -197,6 +198,8 @@ data class ChatSession(
     val preview: String,
     val hasCustomTitle: Boolean = false,
     val messages: List<ChatMessage>,
+    val messageCount: Int = messages.size,
+    val lastMessageAtMillis: Long? = messages.maxOfOrNull { it.createdAtMillis },
     val selectedSkillIds: List<String> = emptyList(),
     val activeSkills: List<ActiveSkillContext> = emptyList(),
     val activeMcpServerIds: List<String> = emptyList(),
@@ -220,6 +223,7 @@ data class AetherUiState(
     val onboardingStep: OnboardingStep = OnboardingStep.Landing,
     val onboardingReturnScreen: AppScreen = AppScreen.Chat,
     val sessions: List<ChatSession> = emptyList(),
+    val usageStatisticsSnapshots: List<ChatUsageStatisticsSnapshot> = emptyList(),
     val currentSessionId: String = DraftSessionId,
     val draftInput: String = "",
     val draftAttachments: List<ChatAttachment> = emptyList(),

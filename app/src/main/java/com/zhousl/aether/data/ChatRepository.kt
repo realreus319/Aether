@@ -10,7 +10,9 @@ import com.zhousl.aether.data.chatdb.ChatHistoryDao
 import com.zhousl.aether.data.chatdb.ChatHistoryDatabase
 import com.zhousl.aether.data.chatdb.ChatMessageEntity
 import com.zhousl.aether.data.chatdb.ChatMessageSummaryEntity
+import com.zhousl.aether.data.chatdb.ChatMessageUsageStatisticsJsonEntity
 import com.zhousl.aether.data.chatdb.ChatSessionEntity
+import com.zhousl.aether.data.chatdb.ChatSessionMessageStatsEntity
 import com.zhousl.aether.data.chatdb.ChatSessionSnapshot
 import com.zhousl.aether.data.chatdb.ChatStateMetaEntity
 import com.zhousl.aether.data.chatdb.ChatWorkspaceFileRefEntity
@@ -37,7 +39,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -54,6 +55,11 @@ private val Context.chatDataStore by preferencesDataStore(name = "aether_chats")
 data class PersistedChatState(
     val sessions: List<ChatSession> = emptyList(),
     val currentSessionId: String = DraftSessionId,
+)
+
+data class ChatUsageStatisticsSnapshot(
+    val sessionId: String,
+    val statistics: ChatUsageStatistics,
 )
 
 enum class PersistedChatWriteIntent {
@@ -88,31 +94,48 @@ class ChatRepository(
                 )
             }.flatMapLatest { state ->
                 val sessionIds = state.rows.map { it.id }
-                val messagesFlow = if (sessionIds.isEmpty()) {
+                val currentSessionId = state.currentSessionId.takeIf { it != DraftSessionId }
+                if (sessionIds.isEmpty()) {
                     clearRestoredMessageCache()
-                    flowOf(emptyList())
-                } else {
-                    chatHistoryDao.observeMessageSummariesForSessions(sessionIds).mapLatest { summaries ->
-                        restoredMessageCacheMutex.withLock {
-                            restoredMessageCache.keys.retainAll(summaries.mapTo(mutableSetOf()) { it.cacheKey })
-                            database.withTransaction {
-                                chatHistoryDao.getMessagesForSummariesSafely(
-                                    summaries = summaries,
-                                    restoredMessageCache = restoredMessageCache,
-                                )
-                            }
-                        }
-                    }
-                }
-                messagesFlow.map { messages ->
-                    val messagesBySessionId = messages.groupBy { it.sessionId }
-                    val sessions = state.rows.map { session ->
-                        session.toChatSession(messagesBySessionId[session.id].orEmpty())
-                    }
-                    PersistedChatState(
-                        sessions = sessions,
-                        currentSessionId = state.currentSessionId,
+                    flowOf(
+                        PersistedChatState(
+                            sessions = emptyList(),
+                            currentSessionId = state.currentSessionId,
+                        )
                     )
+                } else {
+                    combine(
+                        chatHistoryDao.observeMessageStatsForSessions(sessionIds),
+                        if (currentSessionId == null) {
+                            clearRestoredMessageCache()
+                            flowOf(emptyList())
+                        } else {
+                            chatHistoryDao.observeMessageSummariesForSession(currentSessionId).mapLatest { summaries ->
+                                restoredMessageCacheMutex.withLock {
+                                    restoredMessageCache.keys.retainAll(summaries.mapTo(mutableSetOf()) { it.cacheKey })
+                                    database.withTransaction {
+                                        chatHistoryDao.getMessagesForSummariesSafely(
+                                            summaries = summaries,
+                                            restoredMessageCache = restoredMessageCache,
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                    ) { stats, currentMessages ->
+                        val statsBySessionId = stats.associateBy { it.sessionId }
+                        val currentMessagesBySessionId = currentMessages.groupBy { it.sessionId }
+                        val sessions = state.rows.map { session ->
+                            session.toChatSession(
+                                messages = currentMessagesBySessionId[session.id].orEmpty(),
+                                stats = statsBySessionId[session.id],
+                            )
+                        }
+                        PersistedChatState(
+                            sessions = sessions,
+                            currentSessionId = state.currentSessionId,
+                        )
+                    }
                 }
             }
         )
@@ -134,6 +157,51 @@ class ChatRepository(
             preferences.remove(SESSIONS_JSON)
             preferences.remove(CURRENT_SESSION_ID)
             preferences[ROOM_MIGRATION_COMPLETE] = true
+        }
+    }
+    suspend fun getSessionWithMessages(sessionId: String): ChatSession? {
+        migrateLegacyChatStateIfNeeded()
+        return restoredMessageCacheMutex.withLock {
+            database.withTransaction {
+                val session = chatHistoryDao.getSession(sessionId) ?: return@withTransaction null
+                val summaries = chatHistoryDao.getMessageSummariesForSession(sessionId)
+                val messages = chatHistoryDao.getMessagesForSummariesSafely(
+                    summaries = summaries,
+                    restoredMessageCache = restoredMessageCache,
+                )
+                session.toChatSession(messages = messages)
+            }
+        }
+    }
+
+    suspend fun getSessionsWithMessages(): List<ChatSession> {
+        migrateLegacyChatStateIfNeeded()
+        return restoredMessageCacheMutex.withLock {
+            database.withTransaction {
+                val sessions = chatHistoryDao.getSessions()
+                val sessionIds = sessions.map { it.id }
+                if (sessionIds.isEmpty()) return@withTransaction emptyList()
+                val summariesBySessionId = chatHistoryDao.getMessageSummariesForSessions(sessionIds)
+                    .groupBy { it.sessionId }
+                sessions.map { session ->
+                    val messages = chatHistoryDao.getMessagesForSummariesSafely(
+                        summaries = summariesBySessionId[session.id].orEmpty(),
+                        restoredMessageCache = restoredMessageCache,
+                    )
+                    session.toChatSession(messages = messages)
+                }
+            }
+        }
+    }
+
+    suspend fun getUsageStatisticsSnapshot(): List<ChatUsageStatisticsSnapshot> {
+        migrateLegacyChatStateIfNeeded()
+        return chatHistoryDao.getUsageStatisticsMessageJson().mapNotNull { row ->
+            val statistics = row.parseUsageStatisticsOrNull() ?: return@mapNotNull null
+            ChatUsageStatisticsSnapshot(
+                sessionId = row.sessionId,
+                statistics = statistics,
+            )
         }
     }
 
@@ -303,6 +371,8 @@ class ChatRepository(
             chatHistoryDao.deleteSessionsExcept(sessionIds)
             chatHistoryDao.deleteMessagesExceptSessions(sessionIds)
             val existingWorkspaceFileRefsComplete = chatHistoryDao.getMeta()?.workspaceFileRefsComplete ?: true
+            val existingMessageCounts = chatHistoryDao.getMessageStatsForSessions(sessionIds)
+                .associate { stats -> stats.sessionId to stats.messageCount }
             chatHistoryDao.upsertMeta(
                 ChatStateMetaEntity(
                     currentSessionId = safeCurrentSessionId.toStoredCurrentSessionId(),
@@ -312,12 +382,19 @@ class ChatRepository(
             )
 
             sessions.forEach { snapshot ->
-                chatHistoryDao.deleteWorkspaceFileRefsForSession(snapshot.session.id)
-                chatHistoryDao.deleteMessagesForSession(snapshot.session.id)
-                if (snapshot.messages.isNotEmpty()) {
-                    chatHistoryDao.upsertMessages(snapshot.messages)
-                    if (snapshot.workspaceFileRefs.isNotEmpty()) {
-                        chatHistoryDao.upsertWorkspaceFileRefs(snapshot.workspaceFileRefs)
+                val existingMessageCount = existingMessageCounts[snapshot.session.id] ?: 0
+                val isMetadataOnlySnapshot = writeIntent != PersistedChatWriteIntent.ReplaceFromImport &&
+                    snapshot.session.id != safeCurrentSessionId &&
+                    snapshot.messages.isEmpty() &&
+                    existingMessageCount > 0
+                if (!isMetadataOnlySnapshot) {
+                    chatHistoryDao.deleteWorkspaceFileRefsForSession(snapshot.session.id)
+                    chatHistoryDao.deleteMessagesForSession(snapshot.session.id)
+                    if (snapshot.messages.isNotEmpty()) {
+                        chatHistoryDao.upsertMessages(snapshot.messages)
+                        if (snapshot.workspaceFileRefs.isNotEmpty()) {
+                            chatHistoryDao.upsertWorkspaceFileRefs(snapshot.workspaceFileRefs)
+                        }
                     }
                 }
             }
@@ -362,6 +439,7 @@ class ChatRepository(
         val roomMeta = chatHistoryDao.getMeta()
 
         if (roomMeta?.roomMigrationComplete == true) {
+            rebuildWorkspaceFileRefsIfNeeded()
             if (legacySessionsJson.isNotBlank() || preferences[CURRENT_SESSION_ID] != null) {
                 clearLegacyChatState()
             }
@@ -438,6 +516,39 @@ class ChatRepository(
                 )
             )
         }
+        rebuildWorkspaceFileRefsIfNeeded()
+    }
+
+    private suspend fun rebuildWorkspaceFileRefsIfNeeded() {
+        database.withTransaction {
+            val existingMeta = chatHistoryDao.getMeta() ?: return@withTransaction
+            if (existingMeta.workspaceFileRefsComplete) return@withTransaction
+            val refs = chatHistoryDao.getSessions()
+                .map { session -> session.id }
+                .chunked(WorkspaceFileRefQueryChunkSize)
+                .flatMap { sessionIds -> chatHistoryDao.getMessageSummariesForSessions(sessionIds) }
+                .flatMap { summary -> summary.toWorkspaceFileRefs(chatHistoryDao) }
+            chatHistoryDao.deleteAllWorkspaceFileRefs()
+            if (refs.isNotEmpty()) {
+                chatHistoryDao.upsertWorkspaceFileRefs(refs)
+            }
+            chatHistoryDao.upsertMeta(existingMeta.copy(workspaceFileRefsComplete = true))
+        }
+    }
+
+    private suspend fun ChatMessageSummaryEntity.toWorkspaceFileRefs(
+        dao: ChatHistoryDao,
+    ): List<ChatWorkspaceFileRefEntity> {
+        val message = dao.loadMessageEntityInChunks(this)
+            ?.let { entity -> ChatMessageEntityMapper.toChatMessage(entity, entity.position) }
+            ?: ChatMessageEntityMapper.summaryToChatMessage(this)
+        return message.collectWorkspaceFilePathsForIndex().map { path ->
+            ChatWorkspaceFileRefEntity(
+                sessionId = sessionId,
+                messageId = id,
+                path = path,
+            )
+        }.distinctBy { ref -> Triple(ref.sessionId, ref.messageId, ref.path) }
     }
 
     private suspend fun clearLegacyChatState() {
@@ -669,7 +780,10 @@ private fun ChatSession.toSnapshot(index: Int): ChatSessionSnapshot {
     )
 }
 
-private fun ChatSessionEntity.toChatSession(messages: List<LoadedChatMessage>): ChatSession {
+private fun ChatSessionEntity.toChatSession(
+    messages: List<LoadedChatMessage>,
+    stats: ChatSessionMessageStatsEntity? = null,
+): ChatSession {
     val orderedMessages = messages.sortedBy { it.position }.map { it.message }
     val activeSkills = parseActiveSkillContexts(activeSkillsJson)
     return ChatSession(
@@ -678,6 +792,8 @@ private fun ChatSessionEntity.toChatSession(messages: List<LoadedChatMessage>): 
         preview = preview,
         hasCustomTitle = hasCustomTitle,
         messages = orderedMessages,
+        messageCount = stats?.messageCount ?: orderedMessages.size,
+        lastMessageAtMillis = stats?.lastMessageAtMillis ?: orderedMessages.maxOfOrNull { it.createdAtMillis },
         selectedSkillIds = parseStringList(selectedSkillIdsJson).ifEmpty { activeSkills.map { it.skillId } },
         activeSkills = activeSkills,
         activeMcpServerIds = parseStringList(activeMcpServerIdsJson),
@@ -846,6 +962,11 @@ internal fun ChatMessage.toJson(): JSONObject = JSONObject().apply {
     put("toolInvocations", JSONArray().apply { toolInvocations.forEach { put(it.toJson()) } })
     put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
 }
+
+private fun ChatMessageUsageStatisticsJsonEntity.parseUsageStatisticsOrNull(): ChatUsageStatistics? =
+    runCatching {
+        parseUsageStatistics(JSONObject(messageJson).optJSONObject("usageStatistics"))
+    }.getOrNull()
 
 private fun parseUsageStatistics(json: JSONObject?): ChatUsageStatistics? {
     if (json == null) return null

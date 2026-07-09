@@ -35,6 +35,7 @@ data class ChatSessionEntity(
         Index(value = ["sessionId", "position"], unique = true),
         Index(value = ["sessionId", "responseGroupId"]),
         Index(value = ["sessionId", "author"]),
+        Index(value = ["hasUsageStatistics"]),
     ],
 )
 data class ChatMessageEntity(
@@ -48,6 +49,7 @@ data class ChatMessageEntity(
     val responseGroupId: String? = null,
     val displayKind: String? = null,
     val messageSchemaVersion: Int = 1,
+    val hasUsageStatistics: Boolean = false,
 )
 
 data class ChatMessageSummaryEntity(
@@ -61,6 +63,17 @@ data class ChatMessageSummaryEntity(
     val displayKind: String? = null,
     val messageSchemaVersion: Int = 1,
     val messageJsonLength: Int? = null,
+)
+
+data class ChatSessionMessageStatsEntity(
+    val sessionId: String,
+    val messageCount: Int,
+    val lastMessageAtMillis: Long?,
+)
+
+data class ChatMessageUsageStatisticsJsonEntity(
+    val sessionId: String,
+    val messageJson: String,
 )
 
 @Entity(

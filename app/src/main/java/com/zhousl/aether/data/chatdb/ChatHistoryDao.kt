@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 
 @Dao
 interface ChatHistoryDao {
@@ -19,6 +20,36 @@ interface ChatHistoryDao {
     @Query("SELECT * FROM chat_state_meta WHERE id = :id")
     suspend fun getMeta(id: String = ChatStateMetaEntityId): ChatStateMetaEntity?
 
+    @Query("SELECT * FROM chat_sessions WHERE id = :sessionId")
+    suspend fun getSession(sessionId: String): ChatSessionEntity?
+
+    @Query("SELECT COUNT(*) FROM chat_messages WHERE sessionId = :sessionId")
+    suspend fun getMessageCountForSession(sessionId: String): Int
+
+    @Query("""
+        SELECT sessionId, COUNT(*) AS messageCount, MAX(COALESCE(createdAtMillis, 0)) AS lastMessageAtMillis
+        FROM chat_messages
+        WHERE sessionId IN (:sessionIds)
+        GROUP BY sessionId
+    """)
+    suspend fun getMessageStatsForSessions(sessionIds: List<String>): List<ChatSessionMessageStatsEntity>
+
+    @Query("""
+        SELECT sessionId, COUNT(*) AS messageCount, MAX(COALESCE(createdAtMillis, 0)) AS lastMessageAtMillis
+        FROM chat_messages
+        WHERE sessionId IN (:sessionIds)
+        GROUP BY sessionId
+    """)
+    fun observeMessageStatsForSessions(sessionIds: List<String>): Flow<List<ChatSessionMessageStatsEntity>>
+
+    @Query("""
+        SELECT sessionId, messageJson
+        FROM chat_messages
+        WHERE hasUsageStatistics = 1
+        ORDER BY sessionId ASC, position ASC
+    """)
+    suspend fun getUsageStatisticsMessageJson(): List<ChatMessageUsageStatisticsJsonEntity>
+
     @Query("""
         SELECT sessionId, id, position, author, text, createdAtMillis, responseGroupId, displayKind, messageSchemaVersion, length(messageJson) AS messageJsonLength
         FROM chat_messages
@@ -33,7 +64,10 @@ interface ChatHistoryDao {
         WHERE sessionId IN (:sessionIds)
         ORDER BY sessionId ASC, position ASC
     """)
-    fun observeMessageSummariesForSessions(sessionIds: List<String>): Flow<List<ChatMessageSummaryEntity>>
+    suspend fun getMessageSummariesForSessions(sessionIds: List<String>): List<ChatMessageSummaryEntity>
+
+    suspend fun getMessageSummariesForSession(sessionId: String): List<ChatMessageSummaryEntity> =
+        observeMessageSummariesForSession(sessionId).first()
 
     @Query("""
         SELECT length(messageJson)
