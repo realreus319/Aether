@@ -1192,23 +1192,21 @@ private class StdIoMcpTransport(
     private val workspaceDirectory: String,
     private val runtime: LocalRuntime,
 ) : McpSessionTransport {
-    private var runId: String = ""
+    private var opened = false
     private var logOffset: Long = 0L
     private var lastHealthLog: String = ""
 
     override suspend fun open() {
         val launchResult = JSONObject(
-            runtime.execute(
-                JSONObject().apply {
-                    put("command", buildBrokerScript())
-                    put("working_directory", runtime.homeDirectory)
-                }.toString(),
+            runtime.executeCommand(
+                command = buildBrokerLaunchScript(),
+                workingDirectory = runtime.homeDirectory,
             ),
         )
-        if (!launchResult.optBoolean("ok") && launchResult.optString("status") != "running") {
+        if (!launchResult.optBoolean("ok")) {
             error(launchResult.optString("errmsg").ifBlank { "Couldn't launch the MCP stdio broker." })
         }
-        runId = launchResult.optString("run_id")
+        opened = true
     }
 
     override suspend fun sendMessage(message: JSONObject): List<JSONObject> {
@@ -1329,23 +1327,89 @@ private class StdIoMcpTransport(
     }
 
     override suspend fun close() {
-        if (runId.isBlank()) return
+        if (!opened) return
+        opened = false
         runCatching {
-            runtime.killExecution(
-                JSONObject().apply {
-                    put("run_id", runId)
-                }.toString(),
+            runtime.executeCommand(
+                command = buildBrokerStopScript(),
+                workingDirectory = runtime.homeDirectory,
             )
         }
     }
 
-    private fun buildBrokerScript(): String = buildString {
+    private fun buildBrokerLaunchScript(): String = buildString {
+        val workerScriptBase64 = encodeBase64(buildBrokerWorkerScript())
+        appendLine("set -eu")
+        appendLine("root='${brokerRootPath()}'")
+        appendLine("mkdir -p \"\$root\"")
+        appendStopBrokerProcesses(this)
+        appendLine("worker_path=\"\$root/broker.sh\"")
+        appendLine("printf '%s' '$workerScriptBase64' | base64 -d > \"\$worker_path\"")
+        appendLine("chmod 700 \"\$worker_path\"")
+        appendLine("if command -v nohup >/dev/null 2>&1; then")
+        appendLine("  nohup /bin/sh \"\$worker_path\" > \"\$root/broker.log\" 2>&1 < /dev/null &")
+        appendLine("else")
+        appendLine("  /bin/sh \"\$worker_path\" > \"\$root/broker.log\" 2>&1 < /dev/null &")
+        appendLine("fi")
+        appendLine("broker_pid=\$!")
+        appendLine("printf '%s' \"\$broker_pid\" > \"\$root/broker.pid\"")
+        appendLine("attempt=0")
+        appendLine("while [ \"\$attempt\" -lt 50 ]; do")
+        appendLine("  if [ -f \"\$root/server.pid\" ]; then")
+        appendLine("    server_pid=\"\$(tr -d '[:space:]' < \"\$root/server.pid\")\"")
+        appendLine("    if [ -n \"\$server_pid\" ] && kill -0 \"\$server_pid\" 2>/dev/null; then")
+        appendLine("      printf 'broker_pid=%s\\nserver_pid=%s\\n' \"\$broker_pid\" \"\$server_pid\"")
+        appendLine("      exit 0")
+        appendLine("    fi")
+        appendLine("  fi")
+        appendLine("  if ! kill -0 \"\$broker_pid\" 2>/dev/null; then")
+        appendLine("    tail -c 4096 \"\$root/broker.log\" >&2 2>/dev/null || true")
+        appendLine("    exit 1")
+        appendLine("  fi")
+        appendLine("  sleep 0.1")
+        appendLine("  attempt=\$((attempt + 1))")
+        appendLine("done")
+        appendLine("printf 'Timed out waiting for the MCP stdio broker to start.\\n' >&2")
+        appendLine("exit 1")
+    }
+
+    private fun buildBrokerStopScript(): String = buildString {
+        appendLine("set -eu")
+        appendLine("root='${brokerRootPath()}'")
+        appendStopBrokerProcesses(this)
+    }
+
+    private fun appendStopBrokerProcesses(builder: StringBuilder) {
+        builder.appendLine("for pid_path in \"\$root/writer.pid\" \"\$root/server.pid\" \"\$root/broker.pid\"; do")
+        builder.appendLine("  [ -f \"\$pid_path\" ] || continue")
+        builder.appendLine("  pid=\"\$(tr -d '[:space:]' < \"\$pid_path\")\"")
+        builder.appendLine("  [ -n \"\$pid\" ] || continue")
+        builder.appendLine("  if command -v pkill >/dev/null 2>&1; then")
+        builder.appendLine("    pkill -TERM -P \"\$pid\" 2>/dev/null || true")
+        builder.appendLine("  fi")
+        builder.appendLine("  kill -TERM \"\$pid\" 2>/dev/null || true")
+        builder.appendLine("done")
+        builder.appendLine("sleep 0.2")
+        builder.appendLine("for pid_path in \"\$root/writer.pid\" \"\$root/server.pid\" \"\$root/broker.pid\"; do")
+        builder.appendLine("  [ -f \"\$pid_path\" ] || continue")
+        builder.appendLine("  pid=\"\$(tr -d '[:space:]' < \"\$pid_path\")\"")
+        builder.appendLine("  [ -n \"\$pid\" ] || continue")
+        builder.appendLine("  if command -v pkill >/dev/null 2>&1; then")
+        builder.appendLine("    pkill -KILL -P \"\$pid\" 2>/dev/null || true")
+        builder.appendLine("  fi")
+        builder.appendLine("  kill -KILL \"\$pid\" 2>/dev/null || true")
+        builder.appendLine("done")
+        builder.appendLine("rm -f \"\$root/broker.pid\" \"\$root/server.pid\" \"\$root/writer.pid\"")
+        builder.appendLine("rm -f \"\$root/server.stdin\" \"\$root/server.stdout\"")
+    }
+
+    private fun buildBrokerWorkerScript(): String = buildString {
         val commandLine = buildCommandLine()
         appendLine("set -eu")
         appendLine("root='${brokerRootPath()}'")
         appendLine("mkdir -p \"\$root\"")
         appendLine("rm -rf \"\$root/inbox\" \"\$root/processed\"")
-        appendLine("rm -f \"\$root\"/.request-*.tmp \"\$root\"/.poll-*.tmp \"\$root/server.pid\"")
+        appendLine("rm -f \"\$root\"/.request-*.tmp \"\$root\"/.poll-*.tmp \"\$root/server.pid\" \"\$root/writer.pid\"")
         appendLine("mkdir -p \"\$root/inbox\" \"\$root/processed\"")
         appendLine("events_path=\"\$root/events.jsonl\"")
         appendLine("stderr_path=\"\$root/stderr.log\"")
@@ -1362,9 +1426,12 @@ private class StdIoMcpTransport(
         }
         appendLine("command_line='${escapeForSingleQuoted(commandLine)}'")
         appendLine("working_directory='${escapeForSingleQuoted(config.workingDirectory.ifBlank { workspaceDirectory })}'")
+        appendLine("server_pid=''")
+        appendLine("writer_pid=''")
+        appendLine("trap '[ -z \"\$writer_pid\" ] || kill \"\$writer_pid\" 2>/dev/null || true; [ -z \"\$server_pid\" ] || kill \"\$server_pid\" 2>/dev/null || true; rm -f \"\$root/server.pid\" \"\$root/writer.pid\" \"\$stdin_fifo\" \"\$stdout_fifo\"' EXIT INT TERM")
         appendLine("(")
         appendLine("  cd \"\$working_directory\"")
-        appendLine("  /bin/sh -lc \"\$command_line\" < \"\$stdin_fifo\" > \"\$stdout_fifo\" 2>> \"\$stderr_path\"")
+        appendLine("  exec /bin/sh -lc \"\$command_line\" < \"\$stdin_fifo\" > \"\$stdout_fifo\" 2>> \"\$stderr_path\"")
         appendLine(") &")
         appendLine("server_pid=\$!")
         appendLine("printf '%s' \"\$server_pid\" > \"\$root/server.pid\"")
@@ -1372,39 +1439,10 @@ private class StdIoMcpTransport(
         appendLine("exec 4<\"\$stdout_fifo\"")
         appendLine("exec 5>&-")
         appendLine("exec 6<&-")
-        appendLine("trap 'kill \"\$writer_pid\" 2>/dev/null || true; kill \"\$server_pid\" 2>/dev/null || true; rm -f \"\$stdin_fifo\" \"\$stdout_fifo\"' EXIT INT TERM")
-        appendLine("(")
-        appendLine("  while kill -0 \"\$server_pid\" 2>/dev/null; do")
-        appendLine("    found=false")
-        appendLine("    for request_path in \"\$root\"/inbox/*.json; do")
-        appendLine("      [ -f \"\$request_path\" ] || continue")
-        appendLine("      found=true")
-        appendLine("      payload=\"\$(cat \"\$request_path\")\"")
-        appendLine("      payload_bytes=\$(printf '%s' \"\$payload\" | wc -c | tr -d '[:space:]')")
-        appendLine("      printf 'Content-Length: %s\\r\\n\\r\\n%s' \"\$payload_bytes\" \"\$payload\" >&3 || exit 0")
-        appendLine("      mv \"\$request_path\" \"\$root/processed/\"")
-        appendLine("    done")
-        appendLine("    [ \"\$found\" = true ] || sleep 0.1")
-        appendLine("  done")
-        appendLine(") &")
+        appendMcpStdioRequestForwarder(this)
         appendLine("writer_pid=\$!")
-        appendLine("cr=\$(printf '\\r')")
-        appendLine("sequence=0")
-        appendLine("while true; do")
-        appendLine("  content_length=''")
-        appendLine("  while IFS= read -r line <&4; do")
-        appendLine("    line=\${line%\"\$cr\"}")
-        appendLine("    [ -z \"\$line\" ] && break")
-        appendLine("    case \"\$line\" in")
-        appendLine("      Content-Length:*) content_length=\"\${line#Content-Length: }\" ;;")
-        appendLine("    esac")
-        appendLine("  done || break")
-        appendLine("  [ -n \"\$content_length\" ] || continue")
-        appendLine("  payload=\"\$(dd bs=1 count=\"\$content_length\" 2>/dev/null <&4)\"")
-        appendLine("  payload_b64=\"\$(printf '%s' \"\$payload\" | base64 | tr -d '\\n')\"")
-        appendLine("  sequence=\$((sequence + 1))")
-        appendLine("  printf '%s|%s\\n' \"\$sequence\" \"\$payload_b64\" >> \"\$events_path\"")
-        appendLine("done")
+        appendLine("printf '%s' \"\$writer_pid\" > \"\$root/writer.pid\"")
+        appendMcpStdioResponseCollector(this)
         appendLine("kill \"\$writer_pid\" 2>/dev/null || true")
         appendLine("kill \"\$server_pid\" 2>/dev/null || true")
     }
@@ -1447,6 +1485,56 @@ private class StdIoMcpTransport(
 
     private fun escapeShellName(value: String): String =
         value.replace(Regex("[^A-Za-z0-9_]"), "_").ifBlank { "MCP_VALUE" }
+}
+
+internal fun appendMcpStdioRequestForwarder(builder: StringBuilder) {
+    builder.appendLine("(")
+    builder.appendLine("  while kill -0 \"\$server_pid\" 2>/dev/null; do")
+    builder.appendLine("    found=false")
+    builder.appendLine("    for request_path in \"\$root\"/inbox/*.json; do")
+    builder.appendLine("      [ -f \"\$request_path\" ] || continue")
+    builder.appendLine("      found=true")
+    builder.appendLine("      payload=\"\$(cat \"\$request_path\")\"")
+    builder.appendLine("      if [ \"\${AETHER_MCP_STDIO_FRAMING:-newline}\" = 'content-length' ]; then")
+    builder.appendLine("        payload_bytes=\$(printf '%s' \"\$payload\" | wc -c | tr -d '[:space:]')")
+    builder.appendLine("        printf 'Content-Length: %s\\r\\n\\r\\n%s' \"\$payload_bytes\" \"\$payload\" >&3 || exit 0")
+    builder.appendLine("      else")
+    builder.appendLine("        printf '%s\\n' \"\$payload\" >&3 || exit 0")
+    builder.appendLine("      fi")
+    builder.appendLine("      mv \"\$request_path\" \"\$root/processed/\"")
+    builder.appendLine("    done")
+    builder.appendLine("    [ \"\$found\" = true ] || sleep 0.1")
+    builder.appendLine("  done")
+    builder.appendLine(") &")
+}
+
+internal fun appendMcpStdioResponseCollector(builder: StringBuilder) {
+    builder.appendLine("cr=\$(printf '\\r')")
+    builder.appendLine("sequence=0")
+    builder.appendLine("while IFS= read -r first_line <&4; do")
+    builder.appendLine("  first_line=\${first_line%\"\$cr\"}")
+    builder.appendLine("  [ -n \"\$first_line\" ] || continue")
+    builder.appendLine("  payload=''")
+    builder.appendLine("  case \"\$first_line\" in")
+    builder.appendLine("    Content-Length:*)")
+    builder.appendLine("      content_length=\"\${first_line#Content-Length:}\"")
+    builder.appendLine("      content_length=\"\$(printf '%s' \"\$content_length\" | tr -d '[:space:]')\"")
+    builder.appendLine("      while IFS= read -r header_line <&4; do")
+    builder.appendLine("        header_line=\${header_line%\"\$cr\"}")
+    builder.appendLine("        [ -z \"\$header_line\" ] && break")
+    builder.appendLine("      done")
+    builder.appendLine("      [ -n \"\$content_length\" ] || continue")
+    builder.appendLine("      payload=\"\$(dd bs=1 count=\"\$content_length\" 2>/dev/null <&4)\"")
+    builder.appendLine("      ;;")
+    builder.appendLine("    *)")
+    builder.appendLine("      payload=\"\$first_line\"")
+    builder.appendLine("      ;;")
+    builder.appendLine("  esac")
+    builder.appendLine("  [ -n \"\$payload\" ] || continue")
+    builder.appendLine("  payload_b64=\"\$(printf '%s' \"\$payload\" | base64 | tr -d '\\n')\"")
+    builder.appendLine("  sequence=\$((sequence + 1))")
+    builder.appendLine("  printf '%s|%s\\n' \"\$sequence\" \"\$payload_b64\" >> \"\$events_path\"")
+    builder.appendLine("done")
 }
 
 private fun parseTools(
