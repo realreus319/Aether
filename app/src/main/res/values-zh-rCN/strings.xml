@@ -482,6 +482,9 @@
     <string name="provider_form_environment_name">变量名</string>
     <string name="provider_form_environment_value">值</string>
     <string name="provider_form_remove_environment">移除提供方环境变量</string>
+    <string name="provider_form_api_key">API Key</string>
+    <string name="provider_form_base_url">基础 URL</string>
+    <string name="provider_form_manual_model_ids">手动模型 ID</string>
     <string name="provider_form_model_picker_api_key_hint">已启用的模型会显示在聊天模型选择器中。刷新模型目录前，请先配置 API Key 认证。</string>
     <string name="provider_form_model_picker_refresh_hint">已启用的模型会显示在聊天模型选择器中。刷新会从提供方 API 加载模型。</string>
     <string name="provider_form_choose_provider">选择提供方</string>

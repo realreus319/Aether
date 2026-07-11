@@ -20,20 +20,16 @@ class ProviderConfigFormTest {
     }
 
     @Test
-    fun cloudProvidersExposePiApiKeyAndAmbientAuthentication() {
+    fun cloudProvidersUseAmbientAuthenticationByDefault() {
         listOf("amazon-bedrock", "google-vertex").forEach { providerId ->
             val state = ProviderFormState.fromConfig(null)
             val definition = PiProviderCatalog.resolve(providerId)
 
             assertTrue(definition.supportsApiKey)
-            assertTrue(definition.supportsInteractiveApiKey)
+            assertFalse(definition.supportsInteractiveApiKey)
             assertTrue(definition.supportsAmbientAuth)
 
             state.applyProviderDefaults(definition)
-            assertEquals(ProviderAuthMethod.ApiKey, state.authMethod)
-            assertFalse(state.isAuthenticationConfigured())
-
-            state.setAuthMethod(ProviderAuthMethod.Ambient)
             assertEquals(ProviderAuthMethod.Ambient, state.authMethod)
             assertTrue(state.isAuthenticationConfigured())
         }

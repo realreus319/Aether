@@ -50,12 +50,14 @@ import com.zhousl.aether.data.SessionTurnEvent
 import com.zhousl.aether.data.SessionTurnOutcome
 import com.zhousl.aether.data.SessionTurnRequest
 import com.zhousl.aether.data.parseChatSessions
+import com.zhousl.aether.data.parseCustomHeaders
 import com.zhousl.aether.data.parseMcpServerConfigs
 import com.zhousl.aether.data.parseProviderConfigs
 import com.zhousl.aether.data.serializeChatSessions
 import com.zhousl.aether.data.serializeMcpServerConfigs
 import com.zhousl.aether.data.serializeProviderConfigs
 import com.zhousl.aether.data.toJson
+import com.zhousl.aether.data.toJsonArray
 import com.zhousl.aether.data.LlmMessage
 import com.zhousl.aether.data.LlmTextPart
 import com.zhousl.aether.data.ProviderAuthMethod
@@ -3128,6 +3130,17 @@ class AetherViewModel(
         sessionId: String,
         sharedWorkspaceFilePaths: Collection<String> = emptyList(),
     ) {
+        runCatching {
+            runtime.piKernelBridge.closeSession(sessionId)
+        }.onFailure { throwable ->
+            diagnosticLogger.exception(
+                category = "pi_bridge",
+                event = "close_deleted_session_failed",
+                throwable = throwable,
+                level = "warn",
+                sessionId = sessionId,
+            )
+        }
         val unreferencedSharedWorkspaceFilePaths = sharedWorkspaceFilePaths
             .map(String::trim)
             .filter(String::isNotEmpty)
@@ -4542,6 +4555,7 @@ class AetherViewModel(
         )
         put("baseUrl", baseUrl)
         put("modelId", modelId)
+        put("customHeaders", customHeaders.toJsonArray())
         put("systemPrompt", systemPrompt)
         put("tavilyApiKey", tavilyApiKey)
         put("tavilyBaseUrl", tavilyBaseUrl)
@@ -4626,6 +4640,7 @@ class AetherViewModel(
                 ),
             baseUrl = importedBaseUrl,
             modelId = json.optString("modelId", defaults.modelId),
+            customHeaders = parseCustomHeaders(json.optJSONArray("customHeaders")),
             systemPrompt = json.optString("systemPrompt", defaults.systemPrompt),
             tavilyApiKey = json.optString("tavilyApiKey", defaults.tavilyApiKey),
             tavilyBaseUrl = normalizeTavilyBaseUrl(

@@ -30,6 +30,21 @@ class ProviderConfigSerializationTest {
     }
 
     @Test
+    fun importedCloudProviderConfigsDefaultToAmbientAuthentication() {
+        listOf("google-vertex", "amazon-bedrock").forEach { providerId ->
+            val config = parseProviderConfigs(
+                JSONArray().put(
+                    JSONObject()
+                        .put("piProviderId", providerId)
+                        .put("modelId", "test-model")
+                ).toString()
+            ).single()
+
+            assertEquals(ProviderAuthMethod.Ambient, config.authMethod)
+        }
+    }
+
+    @Test
     fun piNativeSerializationDropsLegacyProviderFields() {
         val serialized = serializeProviderConfigs(
             listOf(

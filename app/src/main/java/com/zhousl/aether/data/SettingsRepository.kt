@@ -122,6 +122,14 @@ class SettingsRepository(
                         )
                 }
             }.getOrDefault(false)
+            if (
+                !requiresConfigMigration &&
+                prefs[PI_PROVIDER_ID]?.isNotBlank() == true &&
+                prefs[PROVIDER_AUTH_METHOD]?.isNotBlank() == true &&
+                prefs[PROVIDER] == null
+            ) {
+                return@edit
+            }
             val legacyBaseUrl = prefs[BASE_URL] ?: AppSettings().baseUrl
             val legacyApiKey = prefs[API_KEY].orEmpty()
             val legacyModelId = prefs[MODEL_ID] ?: AppSettings().modelId
