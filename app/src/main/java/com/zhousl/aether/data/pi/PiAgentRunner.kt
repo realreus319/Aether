@@ -2,6 +2,7 @@ package com.zhousl.aether.data.pi
 
 import com.zhousl.aether.data.ActiveSkillContext
 import com.zhousl.aether.data.AetherAgentTurnResult
+import com.zhousl.aether.data.AetherDiagnosticLogger
 import com.zhousl.aether.data.AetherSelfManagementTool
 import com.zhousl.aether.data.AetherToolExecutor
 import com.zhousl.aether.data.AgentToolEvent
@@ -13,9 +14,13 @@ import com.zhousl.aether.data.McpClientManager
 import com.zhousl.aether.data.McpToolBinding
 import com.zhousl.aether.data.StreamingStatus
 import com.zhousl.aether.data.SettingsRepository
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -29,6 +34,7 @@ class PiAgentRunner(
     private val bridge: PiKernelBridge,
     private val toolExecutor: AetherToolExecutor? = null,
     private val settingsRepository: SettingsRepository? = null,
+    private val diagnosticLogger: AetherDiagnosticLogger = AetherDiagnosticLogger.NoOp,
 ) {
     suspend fun runTurn(
         settings: AppSettings,
@@ -91,78 +97,124 @@ class PiAgentRunner(
                     )
                 }
 
-                val eventHandler: suspend (String, JSONObject) -> Unit = { event, eventPayload ->
-                    when (event) {
-                        "assistant_text_delta" ->
-                            onAssistantTextDelta(eventPayload.optString("delta"))
-
-                        "assistant_reasoning_delta" -> {
-                            val delta = eventPayload.optString("delta")
-                            onAssistantReasoningDelta(delta)
-                            if (eventPayload.optString("kind") == "summary") {
-                                onAssistantReasoningSummaryDelta(delta)
-                            }
-                        }
-
-                        "tool_call_start" -> {
-                            onAssistantTextReset()
-                            onToolEvent(eventPayload.toToolEvent(isRunning = true))
-                        }
-
-                        "tool_call_delta" -> {
-                            val toolEvent = eventPayload.toToolEvent(isRunning = true)
-                            if (toolEvent.outputJson == null) {
-                                onToolEvent(toolEvent)
-                            } else {
-                                (onToolProgress ?: onToolEvent)(toolEvent)
-                            }
-                        }
-
-                        "tool_call_end" ->
-                            onToolEvent(eventPayload.toToolEvent(isRunning = false))
-
-                        "host_tool_request" -> handleHostToolRequest(
-                            payload = eventPayload,
-                            sessionId = resolvedSessionId,
-                            settings = settings,
-                            workspaceDirectory = workspaceDirectory,
-                            availableSkills = resolvedAvailableSkills,
-                            activeSkills = resolvedActiveSkills,
-                            providerConfigs = providerConfigs,
-                            mcpClientManager = mcpClientManager,
-                            selfManagementTool = selfManagementTool,
-                            mcpToolBindings = mcpToolBindings,
-                            agentModeEnabled = agentModeEnabled,
-                            updatedSystemPrompt = prompt,
-                            onSkillActivated = onSkillActivated,
-                        )
-
-                        "assistant_error" -> onStreamingStatus(
-                            StreamingStatus(
-                                text = "Agent engine error",
-                                detail = eventPayload.optString("error_message"),
+                coroutineScope {
+                    val parallelHostToolJobs = ConcurrentHashMap<String, Job>()
+                    val handledHostToolRequestIds = ConcurrentHashMap.newKeySet<String>()
+                    val sequentialHostToolRequests = Channel<JSONObject>(Channel.UNLIMITED)
+                    val sequentialHostToolWorker = launch {
+                        for (requestPayload in sequentialHostToolRequests) {
+                            handleHostToolRequest(
+                                payload = requestPayload,
+                                sessionId = resolvedSessionId,
+                                settings = settings,
+                                workspaceDirectory = workspaceDirectory,
+                                availableSkills = resolvedAvailableSkills,
+                                activeSkills = resolvedActiveSkills,
+                                providerConfigs = providerConfigs,
+                                mcpClientManager = mcpClientManager,
+                                selfManagementTool = selfManagementTool,
+                                mcpToolBindings = mcpToolBindings,
+                                agentModeEnabled = agentModeEnabled,
+                                updatedSystemPrompt = prompt,
+                                onSkillActivated = onSkillActivated,
                             )
-                        )
-                    }
-                }
-
-                val deferredInjectedMessages = ConcurrentLinkedQueue<LlmMessage>()
-                suspend fun forwardInjectedMessages() {
-                    pollInjectedUserMessages().forEach { message ->
-                        val accepted = runCatching {
-                            bridge.steer(resolvedSessionId, message.toPiJson())
-                                .optBoolean("accepted")
-                        }.getOrElse { throwable ->
-                            if (throwable is CancellationException) throw throwable
-                            false
-                        }
-                        if (!accepted) {
-                            deferredInjectedMessages += message
                         }
                     }
-                }
 
-                var response = coroutineScope {
+                    suspend fun dispatchHostToolRequest(eventPayload: JSONObject) {
+                        val toolRequestId = eventPayload.optString("tool_request_id").trim()
+                        if (toolRequestId.isBlank()) {
+                            logMalformedHostToolRequest(eventPayload, resolvedSessionId)
+                            return
+                        }
+                        if (!handledHostToolRequestIds.add(toolRequestId)) return
+                        val requestPayload = JSONObject(eventPayload.toString())
+                        if (eventPayload.optString("execution_mode") == "sequential") {
+                            sequentialHostToolRequests.send(requestPayload)
+                            return
+                        }
+                        val job = launch(start = CoroutineStart.LAZY) {
+                            try {
+                                handleHostToolRequest(
+                                    payload = requestPayload,
+                                    sessionId = resolvedSessionId,
+                                    settings = settings,
+                                    workspaceDirectory = workspaceDirectory,
+                                    availableSkills = resolvedAvailableSkills,
+                                    activeSkills = resolvedActiveSkills,
+                                    providerConfigs = providerConfigs,
+                                    mcpClientManager = mcpClientManager,
+                                    selfManagementTool = selfManagementTool,
+                                    mcpToolBindings = mcpToolBindings,
+                                    agentModeEnabled = agentModeEnabled,
+                                    updatedSystemPrompt = prompt,
+                                    onSkillActivated = onSkillActivated,
+                                )
+                            } finally {
+                                parallelHostToolJobs.remove(toolRequestId)
+                            }
+                        }
+                        parallelHostToolJobs[toolRequestId] = job
+                        job.start()
+                    }
+
+                    val eventHandler: suspend (String, JSONObject) -> Unit = { event, eventPayload ->
+                        when (event) {
+                            "assistant_text_delta" ->
+                                onAssistantTextDelta(eventPayload.optString("delta"))
+
+                            "assistant_reasoning_delta" -> {
+                                val delta = eventPayload.optString("delta")
+                                onAssistantReasoningDelta(delta)
+                                if (eventPayload.optString("kind") == "summary") {
+                                    onAssistantReasoningSummaryDelta(delta)
+                                }
+                            }
+
+                            "tool_call_start" -> {
+                                onAssistantTextReset()
+                                onToolEvent(eventPayload.toToolEvent(isRunning = true))
+                            }
+
+                            "tool_call_delta" -> {
+                                val toolEvent = eventPayload.toToolEvent(isRunning = true)
+                                if (toolEvent.outputJson == null) {
+                                    onToolEvent(toolEvent)
+                                } else {
+                                    (onToolProgress ?: onToolEvent)(toolEvent)
+                                }
+                            }
+
+                            "tool_call_end" ->
+                                onToolEvent(eventPayload.toToolEvent(isRunning = false))
+
+                            "host_tool_request" -> dispatchHostToolRequest(eventPayload)
+
+                            "assistant_error" -> onStreamingStatus(
+                                StreamingStatus(
+                                    text = "Agent engine error",
+                                    detail = eventPayload.optString("error_message"),
+                                )
+                            )
+                        }
+                    }
+
+                    val deferredInjectedMessages = ConcurrentLinkedQueue<LlmMessage>()
+                    suspend fun forwardInjectedMessages() {
+                        pollInjectedUserMessages().forEach { message ->
+                            val accepted = runCatching {
+                                bridge.steer(resolvedSessionId, message.toPiJson())
+                                    .optBoolean("accepted")
+                            }.getOrElse { throwable ->
+                                if (throwable is CancellationException) throw throwable
+                                false
+                            }
+                            if (!accepted) {
+                                deferredInjectedMessages += message
+                            }
+                        }
+                    }
+
                     val pollingJob = launch {
                         while (isActive) {
                             forwardInjectedMessages()
@@ -170,42 +222,46 @@ class PiAgentRunner(
                         }
                     }
                     try {
-                        bridge.runTurn(payload, eventHandler)
+                        var response = bridge.runTurn(payload, eventHandler)
+                        forwardInjectedMessages()
+                        while (true) {
+                            val injected = deferredInjectedMessages.poll() ?: break
+                            response = bridge.followUp(
+                                sessionId = resolvedSessionId,
+                                message = injected.toPiJson(),
+                                onEvent = eventHandler,
+                            )
+                        }
+
+                        val completion = response.toPiCompletionResult()
+                        if (
+                            settings.providerConfigId.isNotBlank() &&
+                            completion.updatedOauthCredentialJson.isNotBlank()
+                        ) {
+                            settingsRepository?.updateProviderOAuthCredential(
+                                settings.providerConfigId,
+                                completion.updatedOauthCredentialJson,
+                            )
+                        }
+                        if (completion.errorMessage.isNotBlank()) {
+                            error(completion.errorMessage)
+                        }
+                        AetherAgentTurnResult(
+                            assistantText = completion.assistantText.ifBlank {
+                                "The model finished without returning any assistant text."
+                            },
+                            tokenUsage = completion.usage,
+                            providerPayloadJson = completion.toProviderPayloadJson(),
+                        )
                     } finally {
                         pollingJob.cancelAndJoin()
+                        sequentialHostToolRequests.close()
+                        sequentialHostToolWorker.cancelAndJoin()
+                        parallelHostToolJobs.values.toList().forEach { job ->
+                            job.cancelAndJoin()
+                        }
                     }
                 }
-
-                forwardInjectedMessages()
-                while (true) {
-                    val injected = deferredInjectedMessages.poll() ?: break
-                    response = bridge.followUp(
-                        sessionId = resolvedSessionId,
-                        message = injected.toPiJson(),
-                        onEvent = eventHandler,
-                    )
-                }
-
-                val completion = response.toPiCompletionResult()
-                if (
-                    settings.providerConfigId.isNotBlank() &&
-                    completion.updatedOauthCredentialJson.isNotBlank()
-                ) {
-                    settingsRepository?.updateProviderOAuthCredential(
-                        settings.providerConfigId,
-                        completion.updatedOauthCredentialJson,
-                    )
-                }
-                if (completion.errorMessage.isNotBlank()) {
-                    error(completion.errorMessage)
-                }
-                AetherAgentTurnResult(
-                    assistantText = completion.assistantText.ifBlank {
-                        "The model finished without returning any assistant text."
-                    },
-                    tokenUsage = completion.usage,
-                    providerPayloadJson = completion.toProviderPayloadJson(),
-                )
             }
         } finally {
             onStreamingStatus(null)
@@ -230,7 +286,10 @@ class PiAgentRunner(
         val toolRequestId = payload.optString("tool_request_id").trim()
         val toolCallId = payload.optString("tool_call_id").trim()
         val toolName = payload.optString("tool_name").trim()
-        if (toolRequestId.isBlank()) return
+        if (toolRequestId.isBlank()) {
+            logMalformedHostToolRequest(payload, sessionId)
+            return
+        }
 
         val argumentsJson = payload.argumentsJson()
         val executor = toolExecutor
@@ -314,6 +373,23 @@ class PiAgentRunner(
             },
         )
         bridge.sendHostToolResult(responsePayload)
+    }
+
+    private fun logMalformedHostToolRequest(
+        payload: JSONObject,
+        sessionId: String,
+    ) {
+        diagnosticLogger.event(
+            category = "pi_agent",
+            event = "malformed_host_tool_request",
+            level = "warn",
+            sessionId = sessionId,
+            details = mapOf(
+                "tool_call_id" to payload.optString("tool_call_id").trim(),
+                "tool_name" to payload.optString("tool_name").trim(),
+                "reason" to "Missing tool_request_id.",
+            ),
+        )
     }
 }
 

@@ -143,6 +143,7 @@ class AetherAppRuntime(
     val piAgentRunner = PiAgentRunner(
         bridge = piKernelBridge,
         settingsRepository = settingsRepository,
+        diagnosticLogger = diagnosticLogger,
         toolExecutor = AetherToolExecutor(
             runtimeRouter = runtimeRouter,
             skillManager = skillManager,

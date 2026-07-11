@@ -25,6 +25,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 private const val PiBridgeAssetPath = "pi-bridge/bridge.mjs"
 private const val PiBridgeGuestPath = "/root/.aether/pi-bridge/bridge.mjs"
@@ -40,8 +41,15 @@ private const val CancelledRequestRetentionMillis = 5 * 60 * 1000L
 
 private data class PendingPiBridgeRequest(
     val response: CompletableDeferred<PiBridgeFrame>,
+    val processGeneration: Long,
     val eventChannel: Channel<PiBridgeFrame>? = null,
     val eventJob: Job? = null,
+)
+
+private data class ActivePiBridgeProcess(
+    val process: Process,
+    val writer: BufferedWriter,
+    val generation: Long,
 )
 
 class PiKernelBridge(
@@ -52,8 +60,10 @@ class PiKernelBridge(
     private val pendingRequests = ConcurrentHashMap<String, PendingPiBridgeRequest>()
     private val cancelledRequestIds = ConcurrentHashMap<String, Long>()
     private val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var process: Process? = null
-    private var writer: BufferedWriter? = null
+    private val processStateLock = Any()
+    private val nextProcessGeneration = AtomicLong(0L)
+    @Volatile
+    private var activeProcess: ActivePiBridgeProcess? = null
 
     suspend fun ping(
         onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
@@ -158,6 +168,15 @@ class PiKernelBridge(
             abortOnCancellation = false,
         )
 
+    suspend fun closeSession(sessionId: String): JSONObject =
+        request(
+            type = "close_session",
+            payload = JSONObject().put("session_id", sessionId),
+            timeoutMillis = PiBridgePingTimeoutMillis,
+            abortOnCancellation = false,
+            startIfNeeded = false,
+        )
+
     suspend fun sendHostToolResult(payload: JSONObject) {
         request(
             type = "host_tool_result",
@@ -185,10 +204,11 @@ class PiKernelBridge(
             }
             pendingRequests.clear()
             cancelledRequestIds.clear()
-            runCatching { writer?.close() }
-            runCatching { process?.destroy() }
-            process = null
-            writer = null
+            val stoppedProcess = synchronized(processStateLock) {
+                activeProcess.also { activeProcess = null }
+            }
+            runCatching { stoppedProcess?.writer?.close() }
+            runCatching { stoppedProcess?.process?.destroy() }
         }
     }
 
@@ -199,6 +219,7 @@ class PiKernelBridge(
         onEvent: (suspend (String, JSONObject) -> Unit)? = null,
         abortOnCancellation: Boolean = type == "run_turn" || type == "complete_once" || type == "follow_up",
         onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
+        startIfNeeded: Boolean = true,
     ): JSONObject = withContext(Dispatchers.IO) {
         val id = nextRequestId(type)
         val response = CompletableDeferred<PiBridgeFrame>()
@@ -232,11 +253,6 @@ class PiKernelBridge(
         } else {
             null
         }
-        pendingRequests[id] = PendingPiBridgeRequest(
-            response = response,
-            eventChannel = eventChannel,
-            eventJob = eventJob,
-        )
         val diagnosticDetails = requestDiagnosticDetails(type, payload)
         try {
             diagnosticLogger.event(
@@ -245,13 +261,23 @@ class PiKernelBridge(
                 requestId = id,
                 details = diagnosticDetails,
             )
-            val activeWriter = ensureStartedLocked(onSetupProgress)
+            val requestProcess = if (startIfNeeded) {
+                ensureStartedLocked(onSetupProgress)
+            } else {
+                currentLiveProcess() ?: return@withContext JSONObject().put("closed", false)
+            }
+            pendingRequests[id] = PendingPiBridgeRequest(
+                response = response,
+                processGeneration = requestProcess.generation,
+                eventChannel = eventChannel,
+                eventJob = eventJob,
+            )
             onSetupProgress(PiCoreSetupPhase.VerifyingBridge)
             val line = PiBridgeRequest(id = id, type = type, payload = payload).toJsonLine()
-            synchronized(activeWriter) {
-                activeWriter.write(line)
-                activeWriter.newLine()
-                activeWriter.flush()
+            synchronized(requestProcess.writer) {
+                requestProcess.writer.write(line)
+                requestProcess.writer.newLine()
+                requestProcess.writer.flush()
             }
             val frame = withTimeout(timeoutMillis) { response.await() }
             if (!frame.ok || frame.type == "error") {
@@ -311,11 +337,14 @@ class PiKernelBridge(
 
     private suspend fun ensureStartedLocked(
         onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
-    ): BufferedWriter {
+    ): ActivePiBridgeProcess {
         mutex.withLock {
-            val existingProcess = process
-            val existingWriter = writer
-            if (existingProcess?.isAlive == true && existingWriter != null) return existingWriter
+            currentLiveProcess()?.let { return it }
+            val staleProcess = synchronized(processStateLock) {
+                activeProcess.also { activeProcess = null }
+            }
+            runCatching { staleProcess?.writer?.close() }
+            runCatching { staleProcess?.process?.destroy() }
 
             ensureNodeAvailable(onSetupProgress)
             onSetupProgress(PiCoreSetupPhase.PreparingBridge)
@@ -329,10 +358,16 @@ class PiKernelBridge(
                 command = "node ${shellQuote(PiBridgeGuestPath)}",
                 workingDirectory = PiBridgeWorkingDirectory,
             )
-            process = started
-            writer = BufferedWriter(OutputStreamWriter(started.outputStream, Charsets.UTF_8))
-            startStdoutReader(started)
-            startStderrReader(started)
+            val startedProcess = ActivePiBridgeProcess(
+                process = started,
+                writer = BufferedWriter(OutputStreamWriter(started.outputStream, Charsets.UTF_8)),
+                generation = nextProcessGeneration.incrementAndGet(),
+            )
+            synchronized(processStateLock) {
+                activeProcess = startedProcess
+            }
+            startStdoutReader(startedProcess)
+            startStderrReader(startedProcess)
             diagnosticLogger.event(
                 category = "pi_bridge",
                 event = "process_started",
@@ -342,11 +377,17 @@ class PiKernelBridge(
                     "pi_ai_version" to PiAiVersion,
                     "pi_agent_core_version" to PiAgentCoreVersion,
                     "node_version" to (readNodeVersion() ?: "unknown"),
+                    "process_generation" to startedProcess.generation,
                 ),
             )
-            return writer ?: error("Pi bridge writer was not initialized.")
+            return startedProcess
         }
     }
+
+    private fun currentLiveProcess(): ActivePiBridgeProcess? =
+        synchronized(processStateLock) {
+            activeProcess?.takeIf { it.process.isAlive }
+        }
 
     private suspend fun ensureNodeAvailable(
         onSetupProgress: (PiCoreSetupPhase) -> Unit,
@@ -405,22 +446,28 @@ class PiKernelBridge(
             ?.removePrefix("v")
     }
 
-    private fun startStdoutReader(startedProcess: Process) {
+    private fun startStdoutReader(startedProcess: ActivePiBridgeProcess) {
         Thread(
             {
                 val parser = PiJsonlParser(
-                    onFrame = ::handleFrameFromReader,
+                    onFrame = { frame ->
+                        handleFrameFromReader(frame, startedProcess.generation)
+                    },
                     onInvalidLine = { line, throwable ->
                         diagnosticLogger.exception(
                             category = "pi_bridge",
                             event = "invalid_stdout_json",
                             throwable = throwable,
-                            details = mapOf("line" to line.take(700)),
+                            details = mapOf(
+                                "line" to DiagnosticRedactor.sanitizeString(line.take(700)),
+                            ),
                         )
                     },
                 )
                 runCatching {
-                    BufferedReader(InputStreamReader(startedProcess.inputStream, Charsets.UTF_8)).useLines { lines ->
+                    BufferedReader(
+                        InputStreamReader(startedProcess.process.inputStream, Charsets.UTF_8)
+                    ).useLines { lines ->
                         lines.forEach { line -> parser.accept(line + "\n") }
                     }
                     parser.flush()
@@ -429,42 +476,57 @@ class PiKernelBridge(
                         category = "pi_bridge",
                         event = "stdout_reader_failed",
                         throwable = throwable,
+                        details = mapOf("process_generation" to startedProcess.generation),
                     )
                 }
-                failPendingRequests("Pi bridge process exited.")
+                eventScope.launch {
+                    failPendingRequests(
+                        exitedProcess = startedProcess,
+                        message = "Pi bridge process exited.",
+                    )
+                }
             },
-            "aether-pi-bridge-stdout",
+            "aether-pi-bridge-stdout-${startedProcess.generation}",
         ).apply {
             isDaemon = true
             start()
         }
     }
 
-    private fun startStderrReader(startedProcess: Process) {
+    private fun startStderrReader(startedProcess: ActivePiBridgeProcess) {
         Thread(
             {
                 runCatching {
-                    BufferedReader(InputStreamReader(startedProcess.errorStream, Charsets.UTF_8)).useLines { lines ->
+                    BufferedReader(
+                        InputStreamReader(startedProcess.process.errorStream, Charsets.UTF_8)
+                    ).useLines { lines ->
                         lines.forEach { line ->
                             diagnosticLogger.event(
                                 category = "pi_bridge",
                                 event = "stderr",
                                 level = "warn",
-                                details = mapOf("line" to DiagnosticRedactor.sanitizeString(line)),
+                                details = mapOf(
+                                    "line" to DiagnosticRedactor.sanitizeString(line),
+                                    "process_generation" to startedProcess.generation,
+                                ),
                             )
                         }
                     }
                 }
             },
-            "aether-pi-bridge-stderr",
+            "aether-pi-bridge-stderr-${startedProcess.generation}",
         ).apply {
             isDaemon = true
             start()
         }
     }
 
-    private fun handleFrameFromReader(frame: PiBridgeFrame) {
+    private fun handleFrameFromReader(
+        frame: PiBridgeFrame,
+        processGeneration: Long,
+    ) {
         val pending = pendingRequests[frame.id]
+        if (pending != null && pending.processGeneration != processGeneration) return
         when {
             pending != null && pending.eventChannel != null -> {
                 if (pending.eventChannel.trySend(frame).isFailure) {
@@ -512,14 +574,25 @@ class PiKernelBridge(
         return false
     }
 
-    private fun failPendingRequests(message: String) {
-        pendingRequests.values.forEach { pending ->
-            pending.response.completeExceptionally(PiBridgeException(message, code = "bridge_exited"))
-            pending.eventChannel?.close()
+    private suspend fun failPendingRequests(
+        exitedProcess: ActivePiBridgeProcess,
+        message: String,
+    ) {
+        mutex.withLock {
+            val isCurrentProcess = synchronized(processStateLock) {
+                activeProcess?.process === exitedProcess.process
+            }
+            if (!isCurrentProcess) return
+            pendingRequests.forEach { (requestId, pending) ->
+                if (pending.processGeneration != exitedProcess.generation) return@forEach
+                if (!pendingRequests.remove(requestId, pending)) return@forEach
+                pending.response.completeExceptionally(PiBridgeException(message, code = "bridge_exited"))
+                pending.eventChannel?.close()
+            }
+            synchronized(processStateLock) {
+                activeProcess = null
+            }
         }
-        pendingRequests.clear()
-        process = null
-        writer = null
     }
 
     private fun nextRequestId(type: String): String =
