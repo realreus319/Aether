@@ -116,11 +116,9 @@ import com.zhousl.aether.data.AgentModeAuthorizationMethod
 import com.zhousl.aether.data.AppLanguage
 import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.AutomaticModelPurpose
-import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.ProviderModelOption
 import com.zhousl.aether.data.WorkspaceFileBridge
 import com.zhousl.aether.data.availableModelOptions
-import com.zhousl.aether.data.buildModelOptionKey
 import com.zhousl.aether.data.isOnboardingComplete
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.termux.TermuxContract
@@ -237,13 +235,9 @@ private fun AetherAppContent(
     val agentModeReady = uiState.settings.agentModeAuthorizationEnabled &&
         effectiveTermuxSetupState.isReady &&
         uiState.agentModeAuthorizationState.isReady
-    val agentModeSelected = (activeSession?.agentModeEnabled ?: uiState.draftAgentModeEnabled) &&
-        agentModeReady
-    val conversationModelOptions = remember(uiState.providerConfigs, uiState.settings) {
-        buildConversationModelOptions(
-            settings = uiState.settings,
-            providerConfigs = uiState.providerConfigs,
-        )
+    val agentModeSelected = activeSession?.agentModeEnabled ?: uiState.draftAgentModeEnabled
+    val conversationModelOptions = remember(uiState.providerConfigs) {
+        uiState.providerConfigs.availableModelOptions()
     }
     val selectedConversationModelKey = remember(
         activeSession?.selectedModelKey,
@@ -536,6 +530,8 @@ private fun AetherAppContent(
                         replayMode = uiState.isOnboardingReplay,
                         existingProviderConfig = activeProviderConfig,
                         isFetchingModels = uiState.isFetchingModels,
+                        providerAuthState = uiState.providerAuthState,
+                        piCoreSetupState = uiState.piCoreSetupState,
                         termuxSetupState = effectiveTermuxSetupState,
                         alpineSetupState = uiState.alpineSetupState,
                         rootSetupState = uiState.rootSetupState,
@@ -544,6 +540,9 @@ private fun AetherAppContent(
                         installedSkillCount = uiState.installedSkills.size,
                         mcpServerCount = uiState.mcpServers.size,
                         onFetchModels = viewModel::fetchModels,
+                        onStartProviderLogin = viewModel::startProviderLogin,
+                        onSubmitProviderAuthPrompt = viewModel::submitProviderAuthPrompt,
+                        onClearProviderAuthState = viewModel::clearProviderAuthState,
                         onSkip = viewModel::skipOnboarding,
                         onClose = viewModel::closeOnboarding,
                         onCompleteProviderSetup = viewModel::completeOnboardingProviderSetup,
@@ -690,10 +689,6 @@ private fun AetherAppContent(
                 )
 
                     AppScreen.Settings -> SettingsScreen(
-                    provider = uiState.settings.provider,
-                    apiKey = uiState.settings.apiKey,
-                    baseUrl = uiState.settings.baseUrl,
-                    modelId = uiState.settings.modelId,
                     systemPrompt = uiState.settings.systemPrompt,
                     tavilyApiKey = uiState.settings.tavilyApiKey,
                     tavilyBaseUrl = uiState.settings.tavilyBaseUrl,
@@ -731,6 +726,7 @@ private fun AetherAppContent(
                     installedSkills = uiState.installedSkills,
                     mcpServers = uiState.mcpServers,
                     isFetchingModels = uiState.isFetchingModels,
+                    providerAuthState = uiState.providerAuthState,
                     appUpdate = uiState.appUpdate,
                     onSave = viewModel::saveSettings,
                     onUpdateLanguage = { language ->
@@ -742,6 +738,9 @@ private fun AetherAppContent(
                     onRemoveProviderConfig = viewModel::removeProviderConfig,
                     onSetProviderEnabled = viewModel::setProviderEnabled,
                     onFetchModels = viewModel::fetchModels,
+                    onStartProviderLogin = viewModel::startProviderLogin,
+                    onSubmitProviderAuthPrompt = viewModel::submitProviderAuthPrompt,
+                    onClearProviderAuthState = viewModel::clearProviderAuthState,
                     onImportSkillFolder = { skillFolderPicker.launch(null) },
                     onImportSkillZip = { onComplete ->
                         pendingSkillZipCompletion = onComplete
@@ -1112,35 +1111,6 @@ private fun looksLikeWorkspaceFileLink(rawLink: String): Boolean {
     if (trimmed.startsWith("~/")) return true
     if (trimmed.startsWith("/")) return true
     return false
-}
-
-private fun buildConversationModelOptions(
-    settings: AppSettings,
-    providerConfigs: List<LlmProviderConfig>,
-): List<ProviderModelOption> {
-    val configuredOptions = providerConfigs.availableModelOptions()
-    if (configuredOptions.isNotEmpty()) {
-        return configuredOptions
-    }
-    if (providerConfigs.isNotEmpty()) {
-        return emptyList()
-    }
-    return listOf(
-        ProviderModelOption(
-            key = buildModelOptionKey("legacy", settings.modelId),
-            providerConfigId = "legacy",
-            providerId = settings.provider.storageValue,
-            providerName = settings.provider.displayName,
-            providerType = settings.provider,
-            apiKey = settings.apiKey,
-            baseUrl = settings.baseUrl,
-            modelId = settings.modelId,
-            customHeaders = settings.customHeaders,
-            basicFunctionCallingCompatibilityMode = settings.basicFunctionCallingCompatibilityMode,
-            fullLabel = "${settings.provider.storageValue}/${settings.modelId}",
-            chatLabel = settings.modelId,
-        )
-    ).filter { it.modelId.isNotBlank() && it.baseUrl.isNotBlank() }
 }
 
 private fun resolveConversationModelKey(

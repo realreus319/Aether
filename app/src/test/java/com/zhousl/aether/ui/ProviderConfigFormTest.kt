@@ -1,12 +1,90 @@
 package com.zhousl.aether.ui
 
-import com.zhousl.aether.data.LlmProvider
 import com.zhousl.aether.data.LlmProviderConfig
+import com.zhousl.aether.data.PiProviderCatalog
+import com.zhousl.aether.data.PiProviderEnvironmentVariable
+import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.availableModels
+import com.zhousl.aether.data.pi.PiProviderAuthState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProviderConfigFormTest {
+    @Test
+    fun catalogIncludesEveryPiBuiltInProviderAndCustomEndpoint() {
+        assertEquals(35, PiProviderCatalog.builtInProviders.size)
+        assertEquals(36, PiProviderCatalog.providers.size)
+        assertEquals("openai-compatible", PiProviderCatalog.providers.last().id)
+    }
+
+    @Test
+    fun cloudProvidersExposePiApiKeyAndAmbientAuthentication() {
+        listOf("amazon-bedrock", "google-vertex").forEach { providerId ->
+            val state = ProviderFormState.fromConfig(null)
+            val definition = PiProviderCatalog.resolve(providerId)
+
+            assertTrue(definition.supportsApiKey)
+            assertTrue(definition.supportsInteractiveApiKey)
+            assertTrue(definition.supportsAmbientAuth)
+
+            state.applyProviderDefaults(definition)
+            assertEquals(ProviderAuthMethod.ApiKey, state.authMethod)
+            assertFalse(state.isAuthenticationConfigured())
+
+            state.setAuthMethod(ProviderAuthMethod.Ambient)
+            assertEquals(ProviderAuthMethod.Ambient, state.authMethod)
+            assertTrue(state.isAuthenticationConfigured())
+        }
+    }
+
+    @Test
+    fun cloudflareGatewayUsesPiCredentialFieldsWithoutRequiringBaseUrl() {
+        val state = ProviderFormState.fromConfig(null)
+
+        state.applyProviderDefaults(PiProviderCatalog.resolve("cloudflare-ai-gateway"))
+        state.apiKey = "test-key"
+
+        assertFalse(state.selectedDefinition.requiresBaseUrl)
+        assertEquals("", state.baseUrl)
+        assertTrue(state.isAuthenticationConfigured())
+    }
+
+    @Test
+    fun ensureAvailableProviderIdUsesNextUnusedSuffix() {
+        val state = ProviderFormState.fromConfig(null)
+
+        state.applyProviderDefaults(PiProviderCatalog.resolve("openai"))
+        state.ensureAvailableProviderId(setOf("openai", "openai_2", "openai_3"))
+
+        assertEquals("openai_4", state.providerId)
+    }
+
+    @Test
+    fun providerAuthResultAppliesApiKeyAndProviderEnvironment() {
+        val state = ProviderFormState.fromConfig(null)
+        val environment = listOf(
+            PiProviderEnvironmentVariable("CLOUDFLARE_ACCOUNT_ID", "account"),
+            PiProviderEnvironmentVariable("CLOUDFLARE_GATEWAY_ID", "gateway"),
+        )
+
+        state.applyProviderDefaults(PiProviderCatalog.resolve("cloudflare-ai-gateway"))
+        applyProviderAuthResult(
+            state = state,
+            authState = PiProviderAuthState(
+                providerId = "cloudflare-ai-gateway",
+                authMethod = ProviderAuthMethod.ApiKey,
+                apiKey = "test-key",
+                providerEnvironmentVariables = environment,
+            ),
+        )
+
+        assertEquals("test-key", state.apiKey)
+        assertEquals(environment, state.providerEnvironmentVariables)
+        assertTrue(state.isAuthenticationConfigured())
+    }
+
     @Test
     fun parseManualModelIdsAcceptsMultipleSeparators() {
         assertEquals(
@@ -16,12 +94,36 @@ class ProviderConfigFormTest {
     }
 
     @Test
+    fun newProviderKeepsManualModelIdEmptyAndCanStillBeSaved() {
+        val state = ProviderFormState.fromConfig(null)
+        state.applyProviderDefaults(PiProviderCatalog.resolve("openai"))
+        state.apiKey = "test-key"
+
+        assertEquals("", state.modelId)
+        assertEquals("", state.buildConfig().modelId)
+        assertTrue(state.isValid(emptySet()))
+    }
+
+    @Test
+    fun oauthAccountLabelUsesTheBestAvailableIdentity() {
+        assertEquals(
+            "person@example.com",
+            oauthAccountLabel("""{"email":"person@example.com","accountId":"account-1"}"""),
+        )
+        assertEquals(
+            "account-1",
+            oauthAccountLabel("""{"accountId":"account-1"}"""),
+        )
+        assertEquals("", oauthAccountLabel("not-json"))
+    }
+
+    @Test
     fun buildConfigRemovesManualModelWhenDeletedFromInput() {
         val state = ProviderFormState.fromConfig(
             LlmProviderConfig(
                 providerId = "custom",
                 name = "Custom",
-                providerType = LlmProvider.OpenAiCompatible,
+                piProviderId = "openai-compatible",
                 apiKey = "test-key",
                 baseUrl = "https://api.example.com/v1",
                 modelId = "manual-a",
@@ -46,7 +148,7 @@ class ProviderConfigFormTest {
             LlmProviderConfig(
                 providerId = "custom",
                 name = "Custom",
-                providerType = LlmProvider.OpenAiCompatible,
+                piProviderId = "openai-compatible",
                 apiKey = "test-key",
                 baseUrl = "https://api.example.com/v1",
                 modelId = "manual-a",

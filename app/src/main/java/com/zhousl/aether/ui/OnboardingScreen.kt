@@ -43,6 +43,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Terminal
@@ -84,18 +85,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.zhousl.aether.data.AgentModeAuthorizationMethod
 import com.zhousl.aether.data.AutomaticModelPurpose
-import com.zhousl.aether.data.LlmProvider
 import com.zhousl.aether.data.LlmProviderConfig
-import com.zhousl.aether.data.OfficialVertexPreviewModels
+import com.zhousl.aether.data.PiProviderCatalog
+import com.zhousl.aether.data.PiProviderDefinition
+import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.availableModelOptions
 import com.zhousl.aether.data.findModelOption
-import com.zhousl.aether.data.requiresApiKey
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.data.RootSetupIssue
 import com.zhousl.aether.data.RootSetupState
-import com.zhousl.aether.data.usesOfficialVertexEndpoint
 import com.zhousl.aether.runtime.LocalRuntimeIssue
 import com.zhousl.aether.runtime.LocalRuntimeSetupState
+import com.zhousl.aether.data.pi.PiCoreSetupPhase
+import com.zhousl.aether.data.pi.PiCoreSetupState
+import com.zhousl.aether.data.pi.PiProviderAuthState
 import com.zhousl.aether.termux.TermuxSetupIssue
 import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.termux.TermuxContract
@@ -121,11 +124,14 @@ private const val MessageMinDurationMillis = 1_000L
 private const val MessageMaxDurationMillis = 3_300L
 
 private val TourEasing = CubicBezierEasing(0.22f, 0.84f, 0.18f, 1f)
-private val InitialOnboardingSteps = listOf(OnboardingStep.Landing, OnboardingStep.ProviderSetup)
+private val InitialOnboardingSteps = listOf(
+    OnboardingStep.Landing,
+    OnboardingStep.AlpineSetup,
+    OnboardingStep.ProviderSetup,
+)
 private val FollowUpOnboardingSteps = listOf(
     OnboardingStep.LocalRuntimeChoice,
     OnboardingStep.TermuxSetup,
-    OnboardingStep.AlpineSetup,
     OnboardingStep.AgentModeAuthorization,
     OnboardingStep.TavilySetup,
     OnboardingStep.SkillsOverview,
@@ -157,22 +163,10 @@ private val TourPurple: Color
 
 
 private enum class ProviderTourStage {
+    PickAuthentication,
     PickProvider,
     Credentials,
     Model,
-}
-
-private fun OnboardingStep.flowSteps(): List<OnboardingStep> = when (this) {
-    OnboardingStep.Landing,
-    OnboardingStep.ProviderSetup -> InitialOnboardingSteps
-
-    OnboardingStep.LocalRuntimeChoice,
-    OnboardingStep.TermuxSetup,
-    OnboardingStep.AlpineSetup,
-    OnboardingStep.AgentModeAuthorization,
-    OnboardingStep.TavilySetup,
-    OnboardingStep.SkillsOverview,
-    OnboardingStep.McpOverview -> FollowUpOnboardingSteps
 }
 
 @Composable
@@ -181,6 +175,8 @@ fun OnboardingScreen(
     replayMode: Boolean,
     existingProviderConfig: LlmProviderConfig?,
     isFetchingModels: Boolean,
+    providerAuthState: PiProviderAuthState,
+    piCoreSetupState: PiCoreSetupState,
     termuxSetupState: TermuxSetupState,
     alpineSetupState: LocalRuntimeSetupState,
     rootSetupState: RootSetupState,
@@ -189,6 +185,9 @@ fun OnboardingScreen(
     installedSkillCount: Int,
     mcpServerCount: Int,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
+    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onSubmitProviderAuthPrompt: (String, String, Boolean) -> Unit,
+    onClearProviderAuthState: () -> Unit,
     onSkip: () -> Unit,
     onClose: () -> Unit,
     onCompleteProviderSetup: (LlmProviderConfig) -> Unit,
@@ -215,13 +214,14 @@ fun OnboardingScreen(
         mutableStateOf(tavilyApiKey)
     }
     val formState = rememberProviderFormState(existingProviderConfig)
-    var selectedProvider by rememberSaveable(initialStep, replayMode, existingProviderConfig?.id) {
-        mutableStateOf(existingProviderConfig?.providerType)
-    }
     var selectedRuntimePath by rememberSaveable(initialStep, replayMode) {
         mutableStateOf<OnboardingStep?>(null)
     }
-    val steps = remember(initialStep) { initialStep.flowSteps() }
+    val isInitialFlow = initialStep == OnboardingStep.Landing ||
+        initialStep == OnboardingStep.ProviderSetup
+    val steps = remember(initialStep) {
+        if (isInitialFlow) InitialOnboardingSteps else FollowUpOnboardingSteps
+    }
 
     fun indexOf(step: OnboardingStep): Int = steps.indexOf(step).coerceAtLeast(0)
     fun continueAfterLocalAccessSetup() {
@@ -259,7 +259,7 @@ fun OnboardingScreen(
                 stepIndex = stepIndex,
                 stepCount = steps.size,
                 replayMode = replayMode,
-                onPrimary = { currentStep = OnboardingStep.ProviderSetup },
+                onPrimary = { currentStep = OnboardingStep.AlpineSetup },
                 onSecondary = if (replayMode) onClose else onSkip,
             )
 
@@ -267,14 +267,13 @@ fun OnboardingScreen(
                 stepIndex = stepIndex,
                 stepCount = steps.size,
                 replayMode = replayMode,
-                selectedProvider = selectedProvider,
                 formState = formState,
                 isFetchingModels = isFetchingModels,
-                onSelectProvider = { provider ->
-                    selectedProvider = provider
-                    formState.applyProviderDefaults(provider)
-                },
                 onFetchModels = onFetchModels,
+                authState = providerAuthState,
+                onStartProviderLogin = onStartProviderLogin,
+                onSubmitAuthPrompt = onSubmitProviderAuthPrompt,
+                onClearAuthState = onClearProviderAuthState,
                 onExit = if (replayMode) onClose else onSkip,
                 onClose = if (replayMode) onClose else onSkip,
                 onReturnToLanding = { currentStep = OnboardingStep.Landing },
@@ -285,13 +284,13 @@ fun OnboardingScreen(
                 stepIndex = stepIndex,
                 stepCount = steps.size,
                 onClose = onClose,
-                onChooseAlpine = {
-                    selectedRuntimePath = OnboardingStep.AlpineSetup
-                    currentStep = OnboardingStep.AlpineSetup
-                },
-                onChooseTermux = {
+                onConfigure = {
                     selectedRuntimePath = OnboardingStep.TermuxSetup
                     currentStep = OnboardingStep.TermuxSetup
+                },
+                onSkip = {
+                    selectedRuntimePath = null
+                    currentStep = OnboardingStep.TavilySetup
                 },
             )
 
@@ -299,11 +298,25 @@ fun OnboardingScreen(
                 stepIndex = stepIndex,
                 stepCount = steps.size,
                 setupState = alpineSetupState,
-                onBack = { currentStep = OnboardingStep.LocalRuntimeChoice },
+                piCoreSetupState = piCoreSetupState,
+                required = isInitialFlow,
+                onBack = {
+                    currentStep = if (isInitialFlow) {
+                        OnboardingStep.Landing
+                    } else {
+                        OnboardingStep.LocalRuntimeChoice
+                    }
+                },
                 onClose = onClose,
                 onInitialize = onInitializeAlpineRuntime,
                 onRefresh = onRefreshAlpineSetup,
-                onContinue = { currentStep = OnboardingStep.TavilySetup },
+                onContinue = {
+                    currentStep = if (isInitialFlow) {
+                        OnboardingStep.ProviderSetup
+                    } else {
+                        OnboardingStep.TavilySetup
+                    }
+                },
             )
 
             OnboardingStep.TermuxSetup -> TermuxStep(
@@ -343,12 +356,12 @@ fun OnboardingScreen(
                 value = tavilyApiKeyValue,
                 onValueChange = { tavilyApiKeyValue = it },
                 onBack = {
-                    currentStep = if (selectedRuntimePath == OnboardingStep.AlpineSetup) {
-                        OnboardingStep.AlpineSetup
-                    } else if (termuxSetupState.isReady) {
+                    currentStep = if (selectedRuntimePath == OnboardingStep.TermuxSetup && termuxSetupState.isReady) {
                         OnboardingStep.AgentModeAuthorization
-                    } else {
+                    } else if (selectedRuntimePath == OnboardingStep.TermuxSetup) {
                         OnboardingStep.TermuxSetup
+                    } else {
+                        OnboardingStep.LocalRuntimeChoice
                     }
                 },
                 onClose = onClose,
@@ -640,39 +653,63 @@ private fun ProviderSetupStep(
     stepIndex: Int,
     stepCount: Int,
     replayMode: Boolean,
-    selectedProvider: LlmProvider?,
     formState: ProviderFormState,
     isFetchingModels: Boolean,
-    onSelectProvider: (LlmProvider) -> Unit,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
+    authState: PiProviderAuthState,
+    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onSubmitAuthPrompt: (String, String, Boolean) -> Unit,
+    onClearAuthState: () -> Unit,
     onExit: () -> Unit,
     onClose: () -> Unit,
     onReturnToLanding: () -> Unit,
     onComplete: () -> Unit,
 ) {
 
-    var stage by rememberSaveable(stepIndex, replayMode) { mutableStateOf(ProviderTourStage.PickProvider) }
-    var isFinishing by rememberSaveable(stepIndex, replayMode) { mutableStateOf(false) }
-    val provider = selectedProvider
-    val isLoadingModels = formState.isFetchingModelsLocally || isFetchingModels
-    val modelChoices = remember(provider, formState.baseUrl, formState.cachedModels) {
-        prioritizedModelOptions(
-            provider = provider,
-            baseUrl = formState.baseUrl,
-            cachedModels = formState.cachedModels,
-        )
+    var stage by rememberSaveable(stepIndex, replayMode) {
+        mutableStateOf(ProviderTourStage.PickAuthentication)
     }
-    val canContinueFromCredentials = provider != null &&
-        formState.baseUrl.trim().isNotBlank() &&
-        (!provider.requiresApiKey(formState.baseUrl) || formState.apiKey.trim().isNotBlank())
+    var selectedAuthMethodName by rememberSaveable(stepIndex, replayMode) {
+        mutableStateOf(ProviderAuthMethod.ApiKey.name)
+    }
+    var isFinishing by rememberSaveable(stepIndex, replayMode) { mutableStateOf(false) }
+    var providerSearch by rememberSaveable(stepIndex, replayMode) { mutableStateOf("") }
+    val selectedAuthMethod = ProviderAuthMethod.valueOf(selectedAuthMethodName)
+    val definition = formState.selectedDefinition
+    val isLoadingModels = formState.isFetchingModelsLocally || isFetchingModels
+    val modelChoices = remember(definition.id, formState.cachedModels, formState.modelId) {
+        (formState.cachedModels + formState.modelId)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+    }
+    val providerChoices = remember(providerSearch, selectedAuthMethod) {
+        val query = providerSearch.trim().lowercase()
+        PiProviderCatalog.providers.filter { provider ->
+            val supportsMethod = when (selectedAuthMethod) {
+                ProviderAuthMethod.ApiKey -> provider.supportsApiKey
+                ProviderAuthMethod.OAuth -> provider.supportsOAuth
+                ProviderAuthMethod.Ambient -> provider.supportsAmbientAuth
+            }
+            supportsMethod && (
+                query.isBlank() ||
+                    provider.displayName.lowercase().contains(query) ||
+                    provider.id.lowercase().contains(query) ||
+                    provider.category.lowercase().contains(query)
+                )
+        }
+    }
+    val canContinueFromCredentials = formState.isAuthenticationConfigured()
 
     val message = when (stage) {
+        ProviderTourStage.PickAuthentication -> stringResource(R.string.onboarding_provider_auth_message)
         ProviderTourStage.PickProvider -> stringResource(R.string.onboarding_provider_pick_message)
         ProviderTourStage.Credentials -> stringResource(R.string.onboarding_provider_credentials_message)
         ProviderTourStage.Model -> stringResource(R.string.onboarding_provider_model_message)
     }
     val backAction: (() -> Unit)? = when (stage) {
-        ProviderTourStage.PickProvider -> onReturnToLanding
+        ProviderTourStage.PickAuthentication -> onReturnToLanding
+        ProviderTourStage.PickProvider -> { { stage = ProviderTourStage.PickAuthentication } }
         ProviderTourStage.Credentials -> { { stage = ProviderTourStage.PickProvider } }
         ProviderTourStage.Model -> { { stage = ProviderTourStage.Credentials } }
     }
@@ -712,48 +749,71 @@ private fun ProviderSetupStep(
             label = "provider_stage_transition",
         ) { currentStage ->
             when (currentStage) {
+                ProviderTourStage.PickAuthentication -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        ProviderWizardChoiceRow(
+                            icon = Icons.Rounded.VerifiedUser,
+                            title = stringResource(R.string.provider_add_subscription),
+                            subtitle = stringResource(R.string.provider_add_subscription_description),
+                            onClick = {
+                                selectedAuthMethodName = ProviderAuthMethod.OAuth.name
+                                providerSearch = ""
+                                formState.setAuthMethod(ProviderAuthMethod.OAuth)
+                                stage = ProviderTourStage.PickProvider
+                            },
+                        )
+                        ProviderWizardChoiceRow(
+                            icon = Icons.Rounded.Key,
+                            title = stringResource(R.string.provider_add_api_key),
+                            subtitle = stringResource(R.string.provider_add_api_key_description),
+                            onClick = {
+                                selectedAuthMethodName = ProviderAuthMethod.ApiKey.name
+                                providerSearch = ""
+                                formState.setAuthMethod(ProviderAuthMethod.ApiKey)
+                                stage = ProviderTourStage.PickProvider
+                            },
+                        )
+                        ProviderWizardChoiceRow(
+                            icon = Icons.Rounded.Cloud,
+                            title = stringResource(R.string.provider_add_environment),
+                            subtitle = stringResource(R.string.provider_add_environment_description),
+                            onClick = {
+                                selectedAuthMethodName = ProviderAuthMethod.Ambient.name
+                                providerSearch = ""
+                                formState.setAuthMethod(ProviderAuthMethod.Ambient)
+                                stage = ProviderTourStage.PickProvider
+                            },
+                        )
+                    }
+                }
+
                 ProviderTourStage.PickProvider -> {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        ProviderStageButton(
-                            label = stringResource(R.string.onboarding_provider_openai_responses),
-                            subtitle = stringResource(R.string.onboarding_provider_openai_responses_subtitle),
-                            provider = LlmProvider.OpenAiResponses,
-                            onClick = {
-                                onSelectProvider(LlmProvider.OpenAiResponses)
-                                stage = ProviderTourStage.Credentials
-                            },
+                        MinimalInputField(
+                            label = stringResource(R.string.common_search),
+                            value = providerSearch,
+                            placeholder = stringResource(R.string.onboarding_provider_search_placeholder),
+                            onValueChange = { providerSearch = it },
                         )
-                        ProviderStageButton(
-                            label = stringResource(R.string.onboarding_provider_openai_chat_completions),
-                            subtitle = stringResource(R.string.onboarding_provider_openai_chat_completions_subtitle),
-                            provider = LlmProvider.OpenAiCompatible,
-                            onClick = {
-                                onSelectProvider(LlmProvider.OpenAiCompatible)
-                                stage = ProviderTourStage.Credentials
-                            },
-                        )
-                        ProviderStageButton(
-label = stringResource(R.string.onboarding_provider_vertex),
-                            subtitle = stringResource(R.string.onboarding_provider_vertex_subtitle),
-
-                            provider = LlmProvider.VertexExpress,
-                            onClick = {
-                                onSelectProvider(LlmProvider.VertexExpress)
-                                stage = ProviderTourStage.Credentials
-                            },
-                        )
-                        ProviderStageButton(
-                            label = stringResource(R.string.onboarding_provider_anthropic),
-                            subtitle = stringResource(R.string.onboarding_provider_anthropic_subtitle),
-                            provider = LlmProvider.AnthropicMessages,
-                            onClick = {
-                                onSelectProvider(LlmProvider.AnthropicMessages)
-                                stage = ProviderTourStage.Credentials
-                            },
-                        )
+                        providerChoices.forEach { provider ->
+                            ProviderStageButton(
+                                label = provider.displayName,
+                                subtitle = "${provider.category} · ${provider.id}",
+                                provider = provider,
+                                onClick = {
+                                    onClearAuthState()
+                                    formState.applyProviderDefaults(provider)
+                                    formState.setAuthMethod(selectedAuthMethod)
+                                    stage = ProviderTourStage.Credentials
+                                },
+                            )
+                        }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = stringResource(R.string.onboarding_change_later_settings),
@@ -769,35 +829,19 @@ label = stringResource(R.string.onboarding_provider_vertex),
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
                         TinyLabel(
-                            text = when (provider) {
-                                LlmProvider.OpenAiResponses -> stringResource(R.string.onboarding_using_openai_responses)
-                                LlmProvider.OpenAiCompatible -> stringResource(R.string.onboarding_using_openai_chat_completions)
-                                LlmProvider.VertexExpress -> stringResource(R.string.onboarding_using_vertex)
-                                LlmProvider.AnthropicMessages -> stringResource(R.string.onboarding_using_anthropic)
-                                null -> stringResource(R.string.onboarding_choose_request_format)
-                            },
-                            color = when (provider) {
-                                LlmProvider.VertexExpress -> TourBlue
-                                LlmProvider.AnthropicMessages -> TourPurple
-                                else -> TourGreen
-                            },
+                            text = stringResource(
+                                R.string.onboarding_using_pi_provider,
+                                definition.displayName,
+                            ),
+                            color = TourGreen,
                         )
-                        MinimalInputField(
-                            label = stringResource(R.string.onboarding_api_key),
-                            value = formState.apiKey,
-                            placeholder = if (provider?.requiresApiKey(formState.baseUrl) == true) {
-                                stringResource(R.string.onboarding_required_for_this_format)
-                            } else {
-                                stringResource(R.string.onboarding_optional)
-                            },
-                            onValueChange = { formState.apiKey = it },
-                        )
-                        MinimalInputField(
-                            label = stringResource(R.string.onboarding_base_url),
-                            value = formState.baseUrl,
-                            placeholder = "https://...",
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            onValueChange = { formState.baseUrl = it },
+                        ProviderAuthenticationSetup(
+                            state = formState,
+                            authState = authState,
+                            onStartProviderLogin = onStartProviderLogin,
+                            onSubmitAuthPrompt = onSubmitAuthPrompt,
+                            onClearAuthState = onClearAuthState,
+                            cardColor = TourSurface,
                         )
                         PrimaryActionButton(
                             label = if (isLoadingModels) stringResource(R.string.onboarding_loading_models) else stringResource(R.string.common_next),
@@ -806,8 +850,7 @@ label = stringResource(R.string.onboarding_provider_vertex),
                                 formState.isFetchingModelsLocally = true
                                 onFetchModels(formState.buildConfig()) { models ->
                                     val ordered = prioritizedModelOptions(
-                                        provider = provider,
-                                        baseUrl = formState.baseUrl,
+                                        piProviderId = definition.id,
                                         cachedModels = models,
                                     )
                                     formState.cachedModels = ordered
@@ -874,7 +917,7 @@ label = stringResource(R.string.onboarding_provider_vertex),
                         )
                         PrimaryActionButton(
                             label = stringResource(R.string.common_start_chat),
-                            enabled = provider != null && formState.isValid(emptySet()),
+                            enabled = formState.isValid(emptySet()),
                             onClick = { isFinishing = true },
                         )
                     }
@@ -889,8 +932,8 @@ private fun LocalRuntimeChoiceStep(
     stepIndex: Int,
     stepCount: Int,
     onClose: () -> Unit,
-    onChooseAlpine: () -> Unit,
-    onChooseTermux: () -> Unit,
+    onConfigure: () -> Unit,
+    onSkip: () -> Unit,
 ) {
     ConversationStepPage(
         stepIndex = stepIndex,
@@ -902,21 +945,19 @@ private fun LocalRuntimeChoiceStep(
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            LocalRuntimePathButton(
-                icon = Icons.Rounded.Code,
-                accent = TourBlue,
-                title = stringResource(R.string.onboarding_alpine_vm_title),
-                subtitle = stringResource(R.string.onboarding_alpine_vm_subtitle),
-                onClick = onChooseAlpine,
-            )
-            LocalRuntimePathButton(
+            StepLead(
                 icon = Icons.Rounded.Terminal,
                 accent = TourGreen,
                 title = stringResource(R.string.onboarding_termux_agent_mode_title),
-                subtitle = stringResource(R.string.onboarding_termux_agent_mode_subtitle),
-                onClick = onChooseTermux,
+                body = stringResource(R.string.onboarding_termux_agent_mode_subtitle),
+            )
+            TourActionRow(
+                primaryLabel = stringResource(R.string.onboarding_configure_termux_agent_mode),
+                onPrimary = onConfigure,
+                secondaryLabel = stringResource(R.string.onboarding_not_now),
+                onSecondary = onSkip,
             )
         }
     }
@@ -974,6 +1015,8 @@ private fun AlpineRuntimeStep(
     stepIndex: Int,
     stepCount: Int,
     setupState: LocalRuntimeSetupState,
+    piCoreSetupState: PiCoreSetupState,
+    required: Boolean,
     onBack: () -> Unit,
     onClose: () -> Unit,
     onInitialize: () -> Unit,
@@ -1007,39 +1050,166 @@ private fun AlpineRuntimeStep(
                 title = "Alpine",
                 body = alpineTourStatusText(setupState),
             )
-            if (setupState.detail.isNotBlank()) {
+            if (!setupState.isReady && setupState.detail.isNotBlank()) {
                 Text(
                     text = setupState.detail,
                     style = MaterialTheme.typography.bodySmall,
                     color = TourTextSecondary,
                 )
             }
+            if (setupState.isReady && (required || piCoreSetupState.phase != PiCoreSetupPhase.Idle)) {
+                PiCoreSetupProgress(piCoreSetupState)
+            }
             when (setupState.issue) {
-                LocalRuntimeIssue.Ready -> TourActionRow(
-                    primaryLabel = stringResource(R.string.common_continue),
-                    onPrimary = onContinue,
-                    secondaryLabel = stringResource(R.string.common_refresh),
-                    onSecondary = onRefresh,
-                )
+                LocalRuntimeIssue.Ready -> if (!required || piCoreSetupState.isReady) {
+                    TourActionRow(
+                        primaryLabel = stringResource(R.string.common_continue),
+                        onPrimary = onContinue,
+                        secondaryLabel = stringResource(R.string.common_refresh),
+                        onSecondary = onRefresh,
+                    )
+                } else {
+                    TourActionRow(
+                        primaryLabel = if (piCoreSetupState.isChecking) {
+                            stringResource(R.string.onboarding_pi_setup_working)
+                        } else stringResource(R.string.common_retry),
+                        onPrimary = onRefresh,
+                        primaryEnabled = !piCoreSetupState.isChecking,
+                        primaryLoading = piCoreSetupState.isChecking,
+                        secondaryLabel = stringResource(R.string.common_back),
+                        onSecondary = onBack,
+                    )
+                }
 
                 LocalRuntimeIssue.UnsupportedAbi,
                 LocalRuntimeIssue.MissingAssets,
-                LocalRuntimeIssue.Failed -> TourActionRow(
-                    primaryLabel = stringResource(R.string.common_refresh),
-                    onPrimary = onRefresh,
-                    secondaryLabel = stringResource(R.string.common_skip),
-                    onSecondary = onContinue,
-                )
+                LocalRuntimeIssue.Failed -> if (required) {
+                    TourActionRow(
+                        primaryLabel = stringResource(R.string.common_refresh),
+                        onPrimary = onRefresh,
+                        secondaryLabel = stringResource(R.string.common_back),
+                        onSecondary = onBack,
+                    )
+                } else {
+                    TourActionRow(
+                        primaryLabel = stringResource(R.string.common_refresh),
+                        onPrimary = onRefresh,
+                        secondaryLabel = stringResource(R.string.common_skip),
+                        onSecondary = onContinue,
+                    )
+                }
 
-                else -> TourActionRow(
-                    primaryLabel = stringResource(R.string.settings_initialize),
-                    onPrimary = onInitialize,
-                    secondaryLabel = stringResource(R.string.common_skip),
-                    onSecondary = onContinue,
-                )
+                else -> if (required) {
+                    TourActionRow(
+                        primaryLabel = stringResource(R.string.settings_initialize),
+                        onPrimary = onInitialize,
+                        secondaryLabel = stringResource(R.string.common_back),
+                        onSecondary = onBack,
+                    )
+                } else {
+                    TourActionRow(
+                        primaryLabel = stringResource(R.string.settings_initialize),
+                        onPrimary = onInitialize,
+                        secondaryLabel = stringResource(R.string.common_skip),
+                        onSecondary = onContinue,
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun PiCoreSetupProgress(
+    setupState: PiCoreSetupState,
+) {
+    val stepCount = 5
+    val currentStep = if (setupState.phase == PiCoreSetupPhase.Failed) {
+        setupState.failedAtPhase.step
+    } else {
+        setupState.phase.step
+    }.coerceIn(0, stepCount)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(TourSurface)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = piCoreSetupStatusText(setupState),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (setupState.phase == PiCoreSetupPhase.Failed) TourGold else TourTextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            if (currentStep > 0) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = stringResource(
+                        R.string.onboarding_pi_setup_step,
+                        currentStep,
+                        stepCount,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TourTextSecondary,
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(TourDivider),
+        ) {
+            if (currentStep > 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(currentStep.toFloat() / stepCount)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(if (setupState.isReady) TourGreen else TourBlue),
+                )
+            }
+        }
+        if (setupState.phase == PiCoreSetupPhase.InstallingNode) {
+            Text(
+                text = stringResource(R.string.onboarding_pi_setup_node_wait_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = TourTextSecondary,
+            )
+        } else if (setupState.phase == PiCoreSetupPhase.Failed && setupState.detail.isNotBlank()) {
+            Text(
+                text = setupState.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = TourTextSecondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun piCoreSetupStatusText(
+    setupState: PiCoreSetupState,
+): String = when (setupState.phase) {
+    PiCoreSetupPhase.Idle -> stringResource(R.string.onboarding_pi_setup_pending)
+    PiCoreSetupPhase.CheckingAlpine -> stringResource(R.string.onboarding_pi_setup_checking_alpine)
+    PiCoreSetupPhase.CheckingNode -> stringResource(R.string.onboarding_pi_setup_checking_node)
+    PiCoreSetupPhase.InstallingNode -> stringResource(R.string.onboarding_pi_setup_installing_node)
+    PiCoreSetupPhase.PreparingBridge -> stringResource(R.string.onboarding_pi_setup_preparing_bridge)
+    PiCoreSetupPhase.StartingBridge -> stringResource(R.string.onboarding_pi_setup_starting_bridge)
+    PiCoreSetupPhase.VerifyingBridge -> stringResource(R.string.onboarding_pi_setup_verifying_bridge)
+    PiCoreSetupPhase.Ready -> stringResource(
+        R.string.onboarding_pi_setup_ready,
+        setupState.nodeVersion.ifBlank { "-" },
+    )
+    PiCoreSetupPhase.Failed -> stringResource(R.string.onboarding_pi_setup_failed)
 }
 
 @Composable
@@ -1635,7 +1805,7 @@ private fun TinyLabel(
 private fun ProviderStageButton(
     label: String,
     subtitle: String,
-    provider: LlmProvider,
+    provider: PiProviderDefinition,
     onClick: () -> Unit,
 ) {
     Button(
@@ -1681,17 +1851,9 @@ private fun ProviderStageButton(
 
 @Composable
 private fun ProviderBrandBadge(
-    provider: LlmProvider,
+    provider: PiProviderDefinition,
 ) {
-    BrandMarkBadge(drawableRes = providerBrandDrawable(provider))
-}
-
-@DrawableRes
-private fun providerBrandDrawable(provider: LlmProvider): Int = when (provider) {
-    LlmProvider.OpenAiResponses -> R.drawable.openai_mark
-    LlmProvider.OpenAiCompatible -> R.drawable.openai_mark
-    LlmProvider.VertexExpress -> R.drawable.googlecloud_mark
-    LlmProvider.AnthropicMessages -> R.drawable.anthropic_mark
+    ProviderBrandIconBadge(provider = provider)
 }
 
 @Composable
@@ -1903,6 +2065,8 @@ private fun TourActionRow(
     onPrimary: () -> Unit,
     secondaryLabel: String,
     onSecondary: () -> Unit,
+    primaryEnabled: Boolean = true,
+    primaryLoading: Boolean = false,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1912,6 +2076,8 @@ private fun TourActionRow(
         PrimaryActionButton(
             label = primaryLabel,
             modifier = Modifier.weight(1f),
+            enabled = primaryEnabled,
+            isLoading = primaryLoading,
             onClick = onPrimary,
         )
         TextButton(
@@ -1976,60 +2142,48 @@ private fun messageRevealDuration(message: String): Long {
 }
 
 private fun prioritizedModelOptions(
-    provider: LlmProvider?,
-    baseUrl: String,
+    piProviderId: String?,
     cachedModels: List<String>,
 ): List<String> {
-    val fallback = when (provider) {
-        LlmProvider.OpenAiResponses -> listOf(
+    val fallback = when (piProviderId) {
+        "openai",
+        "openai-codex" -> listOf(
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
         )
 
-        LlmProvider.OpenAiCompatible -> listOf(
-            "gpt-5.5",
-            "gpt-5.4",
-            "claude-4.6-sonnet",
-            "gemini-3-flash",
-            "gemini-3.1-pro",
-        )
-
-        LlmProvider.VertexExpress -> listOf(
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
-        )
-
-        LlmProvider.AnthropicMessages -> listOf(
+        "anthropic" -> listOf(
             "claude-opus-4-5",
             "claude-sonnet-4-5",
             "claude-haiku-4-5",
         )
 
-        null -> listOf(
+        "google",
+        "google-vertex" -> listOf(
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+        )
+
+        else -> listOf(
             "gpt-5.5",
             "gpt-5.4",
+            "claude-4.6-sonnet",
             "gemini-3-flash",
             "gemini-3.1-pro",
-            "claude-4.6-sonnet",
         )
     }
-    val patchedModels = if (provider != null && usesOfficialVertexEndpoint(provider, baseUrl)) {
-        OfficialVertexPreviewModels
-    } else {
-        emptyList()
-    }
-    val orderedModels = (cachedModels + patchedModels + fallback)
+    val orderedModels = (cachedModels + fallback)
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinctBy { it.lowercase() }
         .sortedWith(
             compareBy<String> { preferredModelRank(it) }
-                .thenBy { providerModelRank(provider, it) }
+                .thenBy { providerModelRank(piProviderId, it) }
                 .thenBy { it.lowercase() },
         )
-    return orderedModels.withAutomaticChatModelFirst(provider, baseUrl)
+    return orderedModels.withAutomaticChatModelFirst(piProviderId)
 }
 
 private fun preferredModelRank(model: String): Int {
@@ -2045,17 +2199,17 @@ private fun preferredModelRank(model: String): Int {
 }
 
 private fun List<String>.withAutomaticChatModelFirst(
-    provider: LlmProvider?,
-    baseUrl: String,
+    piProviderId: String?,
 ): List<String> {
-    if (isEmpty() || provider == null) return this
+    if (isEmpty() || piProviderId == null) return this
+    val definition = com.zhousl.aether.data.PiProviderCatalog.resolve(piProviderId)
     val onboardingConfig = LlmProviderConfig(
         id = "onboarding",
-        providerId = provider.storageValue,
-        name = provider.displayName,
-        providerType = provider,
+        providerId = definition.id,
+        name = definition.displayName,
+        piProviderId = definition.id,
         apiKey = "",
-        baseUrl = baseUrl,
+        baseUrl = definition.defaultBaseUrl,
         modelId = first(),
         cachedModels = this,
         enabledModelIds = this,
@@ -2069,32 +2223,32 @@ private fun List<String>.withAutomaticChatModelFirst(
 }
 
 private fun providerModelRank(
-    provider: LlmProvider?,
+    piProviderId: String?,
     model: String,
-): Int = when (provider) {
-    LlmProvider.OpenAiResponses -> when {
+): Int = when (piProviderId) {
+    "openai",
+    "openai-codex" -> when {
         model.lowercase().contains("gpt") -> 0
         else -> 5
     }
 
-    LlmProvider.OpenAiCompatible -> when {
+    "anthropic" -> when {
+        model.lowercase().contains("claude") -> 0
+        else -> 5
+    }
+
+    "google",
+    "google-vertex" -> when {
+        model.lowercase().contains("gemini") -> 0
+        else -> 5
+    }
+
+    else -> when {
         model.lowercase().contains("gpt") -> 0
         model.lowercase().contains("claude") -> 1
         model.lowercase().contains("gemini") -> 2
         else -> 5
     }
-
-    LlmProvider.VertexExpress -> when {
-        model.lowercase().contains("gemini") -> 0
-        else -> 5
-    }
-
-    LlmProvider.AnthropicMessages -> when {
-        model.lowercase().contains("claude") -> 0
-        else -> 5
-    }
-
-    null -> 5
 }
 
 @Composable

@@ -112,7 +112,6 @@ import com.zhousl.aether.data.AgentModeDisplayState
 import com.zhousl.aether.data.AutomaticModelPurpose
 import com.zhousl.aether.data.AppLanguage
 import com.zhousl.aether.data.AppThemeMode
-import com.zhousl.aether.data.LlmProvider
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.ProviderModelOption
 import com.zhousl.aether.data.RootSetupIssue
@@ -280,70 +279,6 @@ internal fun ChatGptTextField(
                 }
             },
         )
-    }
-}
-
-// ChatGPT-style dropdown field (inside a card)
-
-@Composable
-internal fun ChatGptDropdownField(
-    label: String,
-    selectedValue: String,
-    options: List<LlmProvider>,
-    onSelected: (LlmProvider) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = AetherOnSurfaceVariant,
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .clickable { expanded = true }
-                .padding(vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = selectedValue,
-                style = MaterialTheme.typography.bodyLarge,
-                color = AetherOnSurface,
-            )
-            Icon(
-                imageVector = Icons.Rounded.ArrowDropDown,
-                contentDescription = stringResource(R.string.common_choose),
-                tint = AetherOnSurfaceVariant,
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(AetherSurface),
-        ) {
-            Column(Modifier.background(AetherSurface)) {
-                options.forEach { option ->
-                    AetherDropdownMenuItem(
-                        selected = option.displayName == selectedValue,
-                        onClick = {
-                            expanded = false
-                            onSelected(option)
-                        },
-                    ) {
-                        Text(option.displayName, color = AetherOnSurface)
-                    }
-                }
-            }
-        }
     }
 }
 

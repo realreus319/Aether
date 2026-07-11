@@ -21,8 +21,7 @@ import com.zhousl.aether.data.AppThemeMode
 import com.zhousl.aether.data.CurrentOnboardingVersion
 import com.zhousl.aether.data.DiagnosticRedactor
 import com.zhousl.aether.data.InstalledSkill
-import com.zhousl.aether.data.LlmApiClient
-import com.zhousl.aether.data.LlmProvider
+import com.zhousl.aether.data.ProviderModelCatalogClient
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.ModelCatalogClient
 import com.zhousl.aether.data.LocalRuntimeId
@@ -38,7 +37,6 @@ import com.zhousl.aether.data.normalizeLlmInactivityReconnectTimeoutSeconds
 import com.zhousl.aether.data.normalizeOldCommandHistoryRetentionHours
 import com.zhousl.aether.data.normalizeTavilyBaseUrl
 import com.zhousl.aether.data.OnboardingStarterPrompt
-import com.zhousl.aether.data.OpenAiCompatibleClient
 import com.zhousl.aether.data.PackageProfileState
 import com.zhousl.aether.data.RootSetupIssue
 import com.zhousl.aether.data.RootSetupState
@@ -60,7 +58,14 @@ import com.zhousl.aether.data.serializeProviderConfigs
 import com.zhousl.aether.data.toJson
 import com.zhousl.aether.data.LlmMessage
 import com.zhousl.aether.data.LlmTextPart
+import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.pi.PiCompletionClient
+import com.zhousl.aether.data.pi.PiCoreSetupPhase
+import com.zhousl.aether.data.pi.PiCoreSetupState
+import com.zhousl.aether.data.pi.PiProviderAuthState
+import com.zhousl.aether.data.pi.toProviderPayloadJson
+import com.zhousl.aether.data.pi.toPiOAuthPrompt
+import com.zhousl.aether.data.pi.toPiProviderEnvironmentVariables
 import com.zhousl.aether.data.isProviderSetupValid
 import com.zhousl.aether.data.isNightlyUpdateNewer
 import com.zhousl.aether.data.isVersionNewer
@@ -116,7 +121,6 @@ class AetherViewModel(
     private val chatStateStore = runtime.chatStateStore
     private val extensionsRepository = runtime.extensionsRepository
     private val sessionExecutionManager = runtime.sessionExecutionManager
-    private val client = OpenAiCompatibleClient(diagnosticLogger = diagnosticLogger)
     private val piCompletionClient: PiCompletionClient = runtime.piCompletionClient
     private val bashTool = runtime.bashTool
     private val rootSetupController = runtime.rootSetupController
@@ -138,6 +142,7 @@ class AetherViewModel(
     private val _transientMessages = MutableSharedFlow<UiText>(extraBufferCapacity = 4)
     private var didEvaluateWorkspaceMode = false
     private var selectSessionJob: Job? = null
+    private var providerAuthJob: Job? = null
 
     val uiState: StateFlow<AetherUiState> = _uiState.asStateFlow()
     val transientMessages = _transientMessages.asSharedFlow()
@@ -496,6 +501,17 @@ class AetherViewModel(
                 runtime.alpineRuntime.inspectSetup()
             }
             _uiState.update { current -> current.copy(alpineSetupState = setupState) }
+            if (setupState.isReady) {
+                refreshPiCoreSetup()
+            } else {
+                _uiState.update {
+                    it.copy(
+                        piCoreSetupState = PiCoreSetupState(
+                            detail = "Initialize Alpine before starting the agent runtime.",
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -513,8 +529,62 @@ class AetherViewModel(
                 )
             }
             _uiState.update { current -> current.copy(alpineSetupState = setupState) }
+            if (setupState.isReady) {
+                refreshPiCoreSetup()
+            }
             emitTransientMessage(UiText.Raw(setupState.detail.ifBlank { "Alpine runtime status refreshed." }))
         }
+    }
+
+    private suspend fun refreshPiCoreSetup() {
+        if (_uiState.value.piCoreSetupState.isChecking) return
+        _uiState.update {
+            it.copy(
+                piCoreSetupState = PiCoreSetupState(
+                    isChecking = true,
+                    phase = PiCoreSetupPhase.CheckingAlpine,
+                )
+            )
+        }
+        runCatching {
+            withContext(Dispatchers.IO) {
+                runtime.piKernelBridge.ping { phase ->
+                    _uiState.update { current ->
+                        current.copy(
+                            piCoreSetupState = current.piCoreSetupState.copy(
+                                isChecking = true,
+                                phase = phase,
+                            )
+                        )
+                    }
+                }
+            }
+        }.fold(
+            onSuccess = { payload ->
+                _uiState.update {
+                    it.copy(
+                        piCoreSetupState = PiCoreSetupState(
+                            isReady = true,
+                            phase = PiCoreSetupPhase.Ready,
+                            nodeVersion = payload.optString("node_version"),
+                            bridgeVersion = payload.optString("bridge_version"),
+                        )
+                    )
+                }
+            },
+            onFailure = { throwable ->
+                if (throwable is CancellationException) throw throwable
+                _uiState.update { current ->
+                    current.copy(
+                        piCoreSetupState = PiCoreSetupState(
+                            phase = PiCoreSetupPhase.Failed,
+                            failedAtPhase = current.piCoreSetupState.phase,
+                            detail = throwable.userFacingMessage(),
+                        )
+                    )
+                }
+            },
+        )
     }
 
     fun resetAlpineRuntime() {
@@ -915,7 +985,8 @@ class AetherViewModel(
                 event = "onboarding completed",
                 properties = mapOf(
                     "section" to "initial",
-                    "provider" to enabledConfig.providerType.displayName,
+                    "provider" to com.zhousl.aether.data.PiProviderCatalog
+                        .resolve(enabledConfig.piProviderId).displayName,
                     "provider_id" to enabledConfig.id,
                 ),
             )
@@ -923,7 +994,8 @@ class AetherViewModel(
                 event = "onboarding initial completed",
                 properties = mapOf(
                     "section" to "initial",
-                    "provider" to enabledConfig.providerType.displayName,
+                    "provider" to com.zhousl.aether.data.PiProviderCatalog
+                        .resolve(enabledConfig.piProviderId).displayName,
                     "provider_id" to enabledConfig.id,
                 ),
             )
@@ -1538,7 +1610,7 @@ class AetherViewModel(
                 selectedSkillIds = session.selectedSkillIds,
                 activeSkills = session.activeSkills,
                 activeMcpServerIds = session.activeMcpServerIds,
-                agentModeEnabled = session.agentModeEnabled && snapshot.isAgentModeReady(),
+                agentModeEnabled = session.agentModeEnabled,
                 providerConfigs = snapshot.providerConfigs,
             )
             val updatedSessions = current.sessions.toMutableList().apply {
@@ -1619,7 +1691,7 @@ class AetherViewModel(
                 selectedSkillIds = updatedSession.selectedSkillIds,
                 activeSkills = updatedSession.activeSkills,
                 activeMcpServerIds = updatedSession.activeMcpServerIds,
-                agentModeEnabled = updatedSession.agentModeEnabled && snapshot.isAgentModeReady(),
+                agentModeEnabled = updatedSession.agentModeEnabled,
                 providerConfigs = snapshot.providerConfigs,
             )
 
@@ -1679,10 +1751,6 @@ class AetherViewModel(
     }
 
     fun saveSettings(
-        provider: LlmProvider,
-        apiKey: String,
-        baseUrl: String,
-        modelId: String,
         systemPrompt: String,
         tavilyApiKey: String,
         tavilyBaseUrl: String,
@@ -1711,25 +1779,24 @@ class AetherViewModel(
                 options = modelOptions,
                 purpose = AutomaticModelPurpose.Chat,
             )
-            val compatibilitySettings = resolveModelSettings(
-                baseSettings = currentState.settings.copy(
-                    provider = provider,
-                    apiKey = apiKey.trim(),
-                    baseUrl = baseUrl.trim(),
-                    modelId = modelId.trim(),
-                ),
+            val selectedModelSettings = resolveModelSettings(
+                baseSettings = currentState.settings,
                 providerConfigs = currentState.providerConfigs,
                 preferredModelKey = resolvedDefaultChatModelKey,
                 fallbackModelKey = resolvedDefaultChatModelKey,
             )
             settingsRepository.updateSettings(
                 currentState.settings.copy(
-                    provider = compatibilitySettings.provider,
-                    apiKey = compatibilitySettings.apiKey,
-                    baseUrl = compatibilitySettings.baseUrl,
-                    modelId = compatibilitySettings.modelId,
-                    basicFunctionCallingCompatibilityMode =
-                        compatibilitySettings.basicFunctionCallingCompatibilityMode,
+                    piProviderId = selectedModelSettings.piProviderId,
+                    providerConfigId = selectedModelSettings.providerConfigId,
+                    providerAuthMethod = selectedModelSettings.providerAuthMethod,
+                    apiKey = selectedModelSettings.apiKey,
+                    oauthCredentialJson = selectedModelSettings.oauthCredentialJson,
+                    providerEnvironmentVariables =
+                        selectedModelSettings.providerEnvironmentVariables,
+                    baseUrl = selectedModelSettings.baseUrl,
+                    modelId = selectedModelSettings.modelId,
+                    customHeaders = selectedModelSettings.customHeaders,
                     systemPrompt = systemPrompt,
                     tavilyApiKey = tavilyApiKey.trim(),
                     tavilyBaseUrl = normalizeTavilyBaseUrl(tavilyBaseUrl),
@@ -1779,7 +1846,8 @@ class AetherViewModel(
             captureAnalyticsEvent(
                 event = "provider added",
                 properties = mapOf(
-                    "provider" to config.providerType.displayName,
+                    "provider" to com.zhousl.aether.data.PiProviderCatalog
+                        .resolve(config.piProviderId).displayName,
                     "provider_id" to config.id,
                 ),
             )
@@ -1842,7 +1910,10 @@ class AetherViewModel(
     ) {
         _uiState.update { it.copy(isFetchingModels = true) }
         viewModelScope.launch {
-            val result = LlmApiClient.fetchModels(config)
+            val result = ProviderModelCatalogClient.fetchModels(
+                config = config,
+                piKernelBridge = runtime.piKernelBridge,
+            )
             _uiState.update { it.copy(isFetchingModels = false) }
             onComplete(result.models)
             if (result.error != null) {
@@ -1851,6 +1922,158 @@ class AetherViewModel(
                 )
             }
         }
+    }
+
+    fun startProviderLogin(
+        providerId: String,
+        authMethod: ProviderAuthMethod,
+        oauthFlow: String = "",
+    ) {
+        val normalizedProviderId = providerId.trim()
+        if (normalizedProviderId.isBlank()) return
+        if (authMethod == ProviderAuthMethod.Ambient) return
+        providerAuthJob?.cancel()
+        _uiState.update {
+            it.copy(
+                providerAuthState = PiProviderAuthState(
+                    providerId = normalizedProviderId,
+                    authMethod = authMethod,
+                    isRunning = true,
+                    statusMessage = if (authMethod == ProviderAuthMethod.OAuth) {
+                        "Waiting for authorization."
+                    } else {
+                        "Waiting for credentials."
+                    },
+                )
+            )
+        }
+        providerAuthJob = viewModelScope.launch {
+            runCatching {
+                runtime.piKernelBridge.loginProvider(
+                    providerId = normalizedProviderId,
+                    authMethod = authMethod.storageValue,
+                    oauthFlow = oauthFlow,
+                ) { event, payload ->
+                    _uiState.update { current ->
+                        if (
+                            current.providerAuthState.providerId != normalizedProviderId ||
+                            current.providerAuthState.authMethod != authMethod
+                        ) {
+                            current
+                        } else {
+                            val state = current.providerAuthState
+                            current.copy(
+                                providerAuthState = when (event) {
+                                    "auth_url" -> state.copy(
+                                        authorizationUrl = payload.optString("url"),
+                                        statusMessage = payload.optString("instructions")
+                                            .ifBlank { "Complete authorization in your browser." },
+                                    )
+
+                                    "auth_device_code" -> state.copy(
+                                        deviceCode = payload.optString("user_code"),
+                                        verificationUrl = payload.optString("verification_uri"),
+                                        statusMessage = "Enter the device code in your browser.",
+                                    )
+
+                                    "auth_prompt" -> state.copy(
+                                        prompt = payload.toPiOAuthPrompt(),
+                                        statusMessage = payload.optString("message"),
+                                    )
+
+                                    "auth_progress" -> state.copy(
+                                        statusMessage = payload.optString("message"),
+                                    )
+
+                                    else -> state
+                                }
+                            )
+                        }
+                    }
+                }
+            }.fold(
+                onSuccess = { payload ->
+                    _uiState.update { current ->
+                        if (
+                            current.providerAuthState.providerId != normalizedProviderId ||
+                            current.providerAuthState.authMethod != authMethod
+                        ) {
+                            current
+                        } else {
+                            current.copy(
+                                providerAuthState = current.providerAuthState.copy(
+                                    isRunning = false,
+                                    prompt = null,
+                                    apiKey = payload.optString("api_key"),
+                                    oauthCredentialJson = payload.optJSONObject("oauth_credential")
+                                        ?.toString()
+                                        .orEmpty(),
+                                    providerEnvironmentVariables =
+                                        payload.toPiProviderEnvironmentVariables(),
+                                    statusMessage = if (authMethod == ProviderAuthMethod.OAuth) {
+                                        "Connected with OAuth."
+                                    } else {
+                                        "API key configured."
+                                    },
+                                    errorMessage = "",
+                                )
+                            )
+                        }
+                    }
+                },
+                onFailure = { throwable ->
+                    if (throwable is CancellationException) return@fold
+                    _uiState.update { current ->
+                        if (
+                            current.providerAuthState.providerId != normalizedProviderId ||
+                            current.providerAuthState.authMethod != authMethod
+                        ) {
+                            current
+                        } else {
+                            current.copy(
+                                providerAuthState = current.providerAuthState.copy(
+                                    isRunning = false,
+                                    prompt = null,
+                                    errorMessage = throwable.userFacingMessage(),
+                                    statusMessage = "",
+                                )
+                            )
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    fun submitProviderAuthPrompt(
+        promptId: String,
+        value: String,
+        cancelled: Boolean = false,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                runtime.piKernelBridge.submitAuthPrompt(
+                    promptId = promptId,
+                    value = value,
+                    cancelled = cancelled,
+                )
+            }
+            _uiState.update { current ->
+                if (current.providerAuthState.prompt?.id != promptId) {
+                    current
+                } else {
+                    current.copy(
+                        providerAuthState = current.providerAuthState.copy(prompt = null)
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearProviderAuthState() {
+        providerAuthJob?.cancel()
+        providerAuthJob = null
+        _uiState.update { it.copy(providerAuthState = PiProviderAuthState()) }
     }
 
     private fun mergeFetchedModels(
@@ -2413,8 +2636,6 @@ class AetherViewModel(
 
         _uiState.update { current ->
             val updatedSessions = current.sessions.toMutableList()
-            val agentModeRuntimeReady = current.isAgentModeReady()
-
             if (
                 current.editingSessionId != null &&
                 current.editingMessageId != null
@@ -2440,7 +2661,7 @@ class AetherViewModel(
                         requestSelectedSkillIds = updated.selectedSkillIds
                         requestActiveSkills = updated.activeSkills
                         requestActiveMcpServerIds = updated.activeMcpServerIds
-                        requestAgentModeEnabled = updated.agentModeEnabled && agentModeRuntimeReady
+                        requestAgentModeEnabled = updated.agentModeEnabled
                         requestModelKey = updated.selectedModelKey
                     } else {
                         updatedSessions.add(editingSessionIndex, editingSession)
@@ -2459,7 +2680,7 @@ class AetherViewModel(
                     requestSelectedSkillIds = updated.selectedSkillIds
                     requestActiveSkills = updated.activeSkills
                     requestActiveMcpServerIds = updated.activeMcpServerIds
-                    requestAgentModeEnabled = updated.agentModeEnabled && agentModeRuntimeReady
+                    requestAgentModeEnabled = updated.agentModeEnabled
                     requestModelKey = updated.selectedModelKey
                 } else {
                     val newSession = createSession(
@@ -2472,7 +2693,7 @@ class AetherViewModel(
                         },
                         selectedSkillIds = current.draftSelectedSkillIds,
                         activeMcpServerIds = current.draftSelectedMcpServerIds,
-                        agentModeEnabled = current.draftAgentModeEnabled && agentModeRuntimeReady,
+                        agentModeEnabled = current.draftAgentModeEnabled,
                     )
                     shouldGenerateSessionTitle = true
                     sessionForPersistence = newSession
@@ -3024,7 +3245,7 @@ class AetherViewModel(
             selectedSkillIds = session.selectedSkillIds,
             activeSkills = session.activeSkills,
             activeMcpServerIds = session.activeMcpServerIds,
-            agentModeEnabled = session.agentModeEnabled && snapshot.isAgentModeReady(),
+            agentModeEnabled = session.agentModeEnabled,
             providerConfigs = snapshot.providerConfigs,
         )
     }
@@ -3152,8 +3373,9 @@ class AetherViewModel(
         source: String,
     ): Map<String, Any> = mapOf(
         "model" to request.settings.modelId.trim(),
-        "provider" to request.settings.provider.displayName,
-        "provider_type" to request.settings.provider.storageValue,
+        "provider" to com.zhousl.aether.data.PiProviderCatalog
+            .resolve(request.settings.piProviderId).displayName,
+        "provider_type" to request.settings.piProviderId,
         "source" to source,
         "agent_mode_enabled" to request.agentModeEnabled,
         "skill_count" to request.selectedSkillIds.size,
@@ -3203,6 +3425,9 @@ class AetherViewModel(
     private fun normalizeProviderConfig(
         config: LlmProviderConfig,
     ): LlmProviderConfig {
+        val definition = com.zhousl.aether.data.PiProviderCatalog.resolve(
+            config.piProviderId,
+        )
         val manualModels = (config.manualModelIds.ifEmpty { listOf(config.modelId) })
             .map(String::trim)
             .filter(String::isNotEmpty)
@@ -3219,13 +3444,15 @@ class AetherViewModel(
             .takeIf { it.isNotBlank() && availableModels.contains(it) }
             ?: manualModels.firstOrNull()
             ?: cachedModels.firstOrNull()
-            ?: config.providerType.defaultModelId
+            ?: definition.defaultModelId
         val normalizedEnabledModels = config.enabledModelIds
             .map(String::trim)
             .filter { it.isNotEmpty() && availableModels.contains(it) }
             .distinct()
         return config.copy(
             providerId = config.providerId.trim(),
+            name = config.name.trim().ifBlank { definition.displayName },
+            piProviderId = definition.id,
             baseUrl = config.baseUrl.trim(),
             modelId = normalizedModelId,
             manualModelIds = manualModels,
@@ -3233,6 +3460,10 @@ class AetherViewModel(
                 .map { header -> header.copy(name = header.name.trim()) }
                 .filter { header -> header.name.isNotBlank() }
                 .distinctBy { header -> header.name.lowercase() },
+            providerEnvironmentVariables = config.providerEnvironmentVariables
+                .map { variable -> variable.copy(name = variable.name.trim()) }
+                .filter { variable -> variable.name.isNotBlank() }
+                .distinctBy { variable -> variable.name.uppercase() },
             cachedModels = cachedModels,
             enabledModelIds = normalizedEnabledModels,
         )
@@ -3419,7 +3650,7 @@ class AetherViewModel(
         seedMessage: ChatMessage,
         settings: AppSettings,
     ) {
-        if (!isProviderSetupValid(settings.provider, settings.apiKey, settings.baseUrl, settings.modelId)) {
+                if (!settings.isProviderSetupValid()) {
             return
         }
 
@@ -3448,16 +3679,6 @@ class AetherViewModel(
                 ?.assistantText
                 ?.sanitizeGeneratedSessionTitle()
                 .orEmpty()
-                .ifBlank {
-                    client.createChatCompletion(
-                        settings = titleSettings,
-                        systemPrompt = SessionTitleSystemPrompt,
-                        conversation = listOf(buildProviderUserMessage(titleSettings, titleInput)),
-                    ).getOrNull()
-                        ?.assistantText
-                        ?.sanitizeGeneratedSessionTitle()
-                        .orEmpty()
-                }
 
             if (title.isBlank()) return@launch
 
@@ -3541,13 +3762,7 @@ class AetherViewModel(
                     preferredModelKey = resolveDefaultCompactingModelKey(snapshot.settings, providerConfigs),
                     fallbackModelKey = resolveDefaultChatModelKey(snapshot.settings, providerConfigs),
                 )
-                if (!isProviderSetupValid(
-                        compactSettings.provider,
-                        compactSettings.apiKey,
-                        compactSettings.baseUrl,
-                        compactSettings.modelId,
-                    )
-                ) {
+                if (!compactSettings.isProviderSetupValid()) {
                     emitTransientMessage(uiString(R.string.message_configure_provider_before_compacting))
                     return@launch
                 }
@@ -3604,31 +3819,9 @@ class AetherViewModel(
 
     private suspend fun compactConversation(
         settings: AppSettings,
-        session: ChatSession,
+        @Suppress("UNUSED_PARAMETER") session: ChatSession,
         compactInput: String,
     ): Result<CompactedConversation> {
-        if (settings.provider == LlmProvider.OpenAiResponses) {
-            val input = client.buildConversation(
-                settings = settings,
-                messages = session.messages
-                    .filter { it.displayKind != MessageDisplayKind.CompactStatus }
-                    .map(::buildCompactRequestMessage),
-            )
-            val remoteResult = client.createOpenAiResponsesCompaction(
-                settings = settings,
-                input = input,
-            )
-            remoteResult.getOrNull()?.let { compaction ->
-                return Result.success(
-                    CompactedConversation(
-                        summary = compaction.assistantText.trim()
-                            .ifBlank { "OpenAI compacted this conversation into provider-native context." },
-                        providerPayloadJson = compaction.providerPayload.toString(),
-                    )
-                )
-            }
-        }
-
         val piResult = piCompletionClient.completeOnce(
             settings = settings,
             systemPrompt = SessionCompactingSystemPrompt,
@@ -3640,36 +3833,21 @@ class AetherViewModel(
             ),
             disableReasoning = true,
         )
-        val fallbackResult = if (piResult.getOrNull()?.assistantText?.trim().isNullOrBlank()) {
-            client.createChatCompletion(
-                settings = settings,
-                systemPrompt = SessionCompactingSystemPrompt,
-                conversation = listOf(buildProviderUserMessage(settings, compactInput)),
-                disableReasoning = true,
-            )
-        } else {
-            null
-        }
-        val summary = piResult.getOrNull()?.assistantText?.trim().orEmpty()
-            .ifBlank { fallbackResult?.getOrNull()?.assistantText?.trim().orEmpty() }
+        val completion = piResult.getOrNull()
+        val summary = completion?.assistantText?.trim().orEmpty()
         if (summary.isBlank()) {
             return Result.failure(
                 piResult.exceptionOrNull()
-                    ?: fallbackResult?.exceptionOrNull()
                     ?: IllegalStateException("empty model response")
             )
         }
-        return Result.success(CompactedConversation(summary = summary))
-    }
-
-    private fun buildCompactRequestMessage(message: ChatMessage): com.zhousl.aether.data.LlmMessage =
-        com.zhousl.aether.data.LlmMessage(
-            role = if (message.author == MessageAuthor.User) "user" else "assistant",
-            contentParts = listOf(com.zhousl.aether.data.LlmTextPart(formatMessageForCompaction(message))),
-            providerPayload = runCatching {
-                message.providerPayloadJson.takeIf(String::isNotBlank)?.let(::JSONObject)
-            }.getOrNull(),
+        return Result.success(
+            CompactedConversation(
+                summary = summary,
+                providerPayloadJson = completion?.toProviderPayloadJson().orEmpty(),
+            )
         )
+    }
 
     private fun buildCompactConversationInput(session: ChatSession): String {
         val raw = buildString {
@@ -3720,54 +3898,6 @@ class AetherViewModel(
 
     private fun buildCompactedContextMessage(summary: String): String =
         "This conversation was compacted. Continue from this retained context:\n\n$summary"
-
-    private fun buildProviderUserMessage(
-        settings: AppSettings,
-        text: String,
-    ): JSONObject = when (settings.provider) {
-        LlmProvider.OpenAiResponses -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "content",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("type", "input_text")
-                        put("text", text)
-                    }
-                ),
-            )
-        }
-
-        LlmProvider.OpenAiCompatible -> JSONObject().apply {
-            put("role", "user")
-            put("content", text)
-        }
-
-        LlmProvider.VertexExpress -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "parts",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("text", text)
-                    }
-                ),
-            )
-        }
-
-        LlmProvider.AnthropicMessages -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "content",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("type", "text")
-                        put("text", text)
-                    }
-                ),
-            )
-        }
-    }
 
     private fun String.sanitizeGeneratedSessionTitle(): String =
         lineSequence()
@@ -4102,7 +4232,7 @@ class AetherViewModel(
         appendLine("currentSessionId=${snapshot.currentSessionId}")
         appendLine("sessionCount=${snapshot.sessions.size}")
         appendLine("runningSessionCount=${snapshot.sessionExecutionStates.values.count { it.isRunning }}")
-        appendLine("provider=${snapshot.settings.provider.storageValue}")
+        appendLine("piProviderId=${snapshot.settings.piProviderId}")
         appendLine("providerConfigCount=${snapshot.providerConfigs.size}")
         appendLine("skillCount=${snapshot.installedSkills.size}")
         appendLine("mcpServerCount=${snapshot.mcpServers.size}")
@@ -4137,7 +4267,7 @@ class AetherViewModel(
 
     private fun buildSettingsDiagnosticSummary(snapshot: AetherUiState): JSONObject =
         JSONObject().apply {
-            put("provider", snapshot.settings.provider.storageValue)
+            put("piProviderId", snapshot.settings.piProviderId)
             put("modelId", snapshot.settings.modelId)
             put("baseUrl", DiagnosticRedactor.sanitizedBaseUrl(snapshot.settings.baseUrl))
             put("defaultChatModelKey", snapshot.settings.defaultChatModelKey)
@@ -4148,7 +4278,6 @@ class AetherViewModel(
             put("notifyOnTaskCompletion", snapshot.settings.notifyOnTaskCompletion)
             put("termuxSetupCompleted", snapshot.settings.termuxSetupCompleted)
             put("termuxSetupNoticeDismissed", snapshot.settings.termuxSetupNoticeDismissed)
-            put("basicFunctionCallingCompatibilityMode", snapshot.settings.basicFunctionCallingCompatibilityMode)
             put("privacyPolicyAccepted", snapshot.settings.privacyPolicyAccepted)
             put("termux", JSONObject().apply {
                 put("issue", snapshot.termuxSetupState.issue.name)
@@ -4184,7 +4313,7 @@ class AetherViewModel(
                     JSONObject().apply {
                         put("id", config.id)
                         put("name", config.name)
-                        put("providerType", config.providerType.storageValue)
+                        put("piProviderId", config.piProviderId)
                         put("baseUrl", DiagnosticRedactor.sanitizedBaseUrl(config.baseUrl))
                         put("modelId", config.modelId)
                         put("cachedModelCount", config.cachedModels.size)
@@ -4394,8 +4523,23 @@ class AetherViewModel(
         }
 
     private fun AppSettings.toJson(): JSONObject = JSONObject().apply {
-        put("provider", provider.storageValue)
+        put("piProviderId", piProviderId)
+        put("providerConfigId", providerConfigId)
+        put("providerAuthMethod", providerAuthMethod.storageValue)
         put("apiKey", apiKey)
+        put("oauthCredentialJson", oauthCredentialJson)
+        put(
+            "providerEnvironmentVariables",
+            JSONArray().apply {
+                providerEnvironmentVariables.forEach { variable ->
+                    put(
+                        JSONObject()
+                            .put("name", variable.name)
+                            .put("value", variable.value)
+                    )
+                }
+            },
+        )
         put("baseUrl", baseUrl)
         put("modelId", modelId)
         put("systemPrompt", systemPrompt)
@@ -4449,11 +4593,6 @@ class AetherViewModel(
         put("defaultTitleModelKey", defaultTitleModelKey)
         put("defaultNamingModelKey", defaultNamingModelKey)
         put("defaultCompactingModelKey", defaultCompactingModelKey)
-        put(
-            "unsupportedParallelToolCallProviderKeys",
-            JSONArray().apply { unsupportedParallelToolCallProviderKeys.forEach(::put) },
-        )
-        put("basicFunctionCallingCompatibilityMode", basicFunctionCallingCompatibilityMode)
         put("onboardingSeenVersion", onboardingSeenVersion)
         put("onboardingCompletedVersion", onboardingCompletedVersion)
         put("privacyPolicyAccepted", privacyPolicyAccepted)
@@ -4463,10 +4602,29 @@ class AetherViewModel(
     private fun parseImportedSettings(json: JSONObject?): AppSettings {
         if (json == null) return AppSettings()
         val defaults = AppSettings()
+        val importedBaseUrl = json.optString("baseUrl", defaults.baseUrl)
+        val importedPiProviderId = json.optString("piProviderId").trim().ifBlank {
+            com.zhousl.aether.data.inferLegacyPiProviderId(
+                json.optString("provider"),
+                importedBaseUrl,
+            )
+        }
         return AppSettings(
-            provider = LlmProvider.fromStorage(json.optString("provider")),
+            piProviderId = importedPiProviderId,
+            providerConfigId = json.optString("providerConfigId"),
+            providerAuthMethod = com.zhousl.aether.data.ProviderAuthMethod.fromStorage(
+                json.optString("providerAuthMethod"),
+            ),
             apiKey = json.optString("apiKey", defaults.apiKey),
-            baseUrl = json.optString("baseUrl", defaults.baseUrl),
+            oauthCredentialJson = json.optString(
+                "oauthCredentialJson",
+                defaults.oauthCredentialJson,
+            ),
+            providerEnvironmentVariables = com.zhousl.aether.data
+                .parseProviderEnvironmentVariables(
+                    json.optJSONArray("providerEnvironmentVariables"),
+                ),
+            baseUrl = importedBaseUrl,
             modelId = json.optString("modelId", defaults.modelId),
             systemPrompt = json.optString("systemPrompt", defaults.systemPrompt),
             tavilyApiKey = json.optString("tavilyApiKey", defaults.tavilyApiKey),
@@ -4543,13 +4701,6 @@ class AetherViewModel(
             defaultCompactingModelKey = json.optString(
                 "defaultCompactingModelKey",
                 defaults.defaultCompactingModelKey,
-            ),
-            unsupportedParallelToolCallProviderKeys = parseImportedStringArray(
-                json.optJSONArray("unsupportedParallelToolCallProviderKeys")
-            ),
-            basicFunctionCallingCompatibilityMode = json.optBoolean(
-                "basicFunctionCallingCompatibilityMode",
-                defaults.basicFunctionCallingCompatibilityMode,
             ),
             onboardingSeenVersion = json.optInt("onboardingSeenVersion", defaults.onboardingSeenVersion),
             onboardingCompletedVersion = json.optInt(

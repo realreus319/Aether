@@ -139,8 +139,8 @@ import com.zhousl.aether.data.AutomaticModelPurpose
 import com.zhousl.aether.data.ChatUsageStatisticsSnapshot
 import com.zhousl.aether.data.AppLanguage
 import com.zhousl.aether.data.AppThemeMode
-import com.zhousl.aether.data.LlmProvider
 import com.zhousl.aether.data.LlmProviderConfig
+import com.zhousl.aether.data.PiProviderCatalog
 import com.zhousl.aether.data.LocalRuntimeId
 import com.zhousl.aether.data.McpServerTestOperation
 import com.zhousl.aether.data.PackageProfileState
@@ -156,6 +156,8 @@ import com.zhousl.aether.data.summary
 import com.zhousl.aether.data.availableModelOptions
 import com.zhousl.aether.data.availableModels
 import com.zhousl.aether.data.enabledModels
+import com.zhousl.aether.data.ProviderAuthMethod
+import com.zhousl.aether.data.pi.PiProviderAuthState
 import com.zhousl.aether.data.findModelOption
 import com.zhousl.aether.data.normalizeLlmInactivityReconnectTimeoutSeconds
 import com.zhousl.aether.data.normalizeOldCommandHistoryRetentionHours
@@ -379,10 +381,6 @@ private fun settingsTopOverlayTailGradient(): Brush = Brush.verticalGradient(
 
 @Composable
 fun SettingsScreen(
-    provider: LlmProvider,
-    apiKey: String,
-    baseUrl: String,
-    modelId: String,
     systemPrompt: String,
     tavilyApiKey: String,
     tavilyBaseUrl: String,
@@ -418,12 +416,9 @@ fun SettingsScreen(
     installedSkills: List<com.zhousl.aether.data.InstalledSkill>,
     mcpServers: List<com.zhousl.aether.data.McpServerConfig>,
     isFetchingModels: Boolean,
+    providerAuthState: PiProviderAuthState,
     appUpdate: AppUpdateUiState,
     onSave: (
-        LlmProvider,
-        String,
-        String,
-        String,
         String,
         String,
         String,
@@ -450,6 +445,9 @@ fun SettingsScreen(
     onRemoveProviderConfig: (String) -> Unit,
     onSetProviderEnabled: (String, Boolean) -> Unit,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
+    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onSubmitProviderAuthPrompt: (String, String, Boolean) -> Unit,
+    onClearProviderAuthState: () -> Unit,
     onImportSkillFolder: () -> Unit,
     onImportSkillZip: ((Boolean) -> Unit) -> Unit,
     onInstallSkillUrl: (String, (Boolean) -> Unit) -> Unit,
@@ -580,12 +578,7 @@ fun SettingsScreen(
     }
 
     fun persistAndExit() {
-        val compatibilityOption = enabledModelOptions.firstOrNull()
         onSave(
-            compatibilityOption?.providerType ?: provider,
-            compatibilityOption?.apiKey ?: apiKey,
-            compatibilityOption?.baseUrl ?: baseUrl,
-            compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
             normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
@@ -614,12 +607,7 @@ fun SettingsScreen(
     }
 
     fun persistAndReplayOnboarding() {
-        val compatibilityOption = enabledModelOptions.firstOrNull()
         onSave(
-            compatibilityOption?.providerType ?: provider,
-            compatibilityOption?.apiKey ?: apiKey,
-            compatibilityOption?.baseUrl ?: baseUrl,
-            compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
             normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
@@ -648,12 +636,7 @@ fun SettingsScreen(
     }
 
     fun persistAndReplayFollowUpOnboarding() {
-        val compatibilityOption = enabledModelOptions.firstOrNull()
         onSave(
-            compatibilityOption?.providerType ?: provider,
-            compatibilityOption?.apiKey ?: apiKey,
-            compatibilityOption?.baseUrl ?: baseUrl,
-            compatibilityOption?.modelId ?: modelId,
             systemPromptValue.text,
             tavilyApiKeyValue.text,
             normalizeTavilyBaseUrl(tavilyBaseUrlValue.text),
@@ -762,7 +745,7 @@ fun SettingsScreen(
                         enabledCount > 1 -> settingsEnabledProvidersSummary(enabledCount)
                         enabledCount == 1 -> providerConfigs.firstOrNull { it.isEnabled }?.name.orEmpty()
                         enabledModelOptions.isNotEmpty() -> enabledModelOptions.first().fullLabel
-                        else -> provider.displayName
+                        else -> stringResource(R.string.settings_no_providers_configured)
                     }
                 },
                 systemPromptSnippet = systemPromptValue.text.take(60),
@@ -919,6 +902,10 @@ fun SettingsScreen(
                 },
                 onModelEnabledChange = {},
                 onFetchModels = onFetchModels,
+                authState = providerAuthState,
+                onStartProviderLogin = onStartProviderLogin,
+                onSubmitAuthPrompt = onSubmitProviderAuthPrompt,
+                onClearAuthState = onClearProviderAuthState,
                 onBack = { currentPage = SettingsPage.Providers.name },
             )
 
@@ -934,6 +921,10 @@ fun SettingsScreen(
                     },
                     onModelEnabledChange = onUpsertProviderConfig,
                     onFetchModels = onFetchModels,
+                    authState = providerAuthState,
+                    onStartProviderLogin = onStartProviderLogin,
+                    onSubmitAuthPrompt = onSubmitProviderAuthPrompt,
+                    onClearAuthState = onClearProviderAuthState,
                     onBack = { currentPage = SettingsPage.Providers.name },
                 )
             }
@@ -2383,6 +2374,7 @@ private fun ProviderCard(
 ) {
     val availableModels = config.availableModels()
     val enabledModels = config.enabledModels()
+    val provider = PiProviderCatalog.resolve(config.piProviderId)
 
     Row(
         modifier = Modifier
@@ -2397,7 +2389,14 @@ private fun ProviderCard(
             onCheckedChange = { enabled -> onEnabledChange(enabled) },
         )
 
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(10.dp))
+        ProviderBrandIconBadge(
+            provider = provider,
+            badgeSize = 40.dp,
+            iconSize = 25.dp,
+            cornerRadius = 8.dp,
+        )
+        Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -2410,7 +2409,7 @@ private fun ProviderCard(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "${config.providerType.displayName} · ${config.providerId}",
+                text = "${provider.displayName} · ${config.providerId}",
                 style = MaterialTheme.typography.bodySmall,
                 color = AetherOnSurfaceVariant,
                 maxLines = 1,
@@ -2470,7 +2469,8 @@ private fun ModelSelectionListPage(
                     option.modelId.contains(needle, ignoreCase = true) ||
                     option.providerName.contains(needle, ignoreCase = true) ||
                     option.providerId.contains(needle, ignoreCase = true) ||
-                    option.providerType.displayName.contains(needle, ignoreCase = true)
+                    PiProviderCatalog.resolve(option.piProviderId).displayName
+                        .contains(needle, ignoreCase = true)
             }
         }
     }
@@ -2645,13 +2645,37 @@ private fun ProviderEditPage(
     onSave: (LlmProviderConfig) -> Unit,
     onModelEnabledChange: (LlmProviderConfig) -> Unit,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
+    authState: PiProviderAuthState,
+    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onSubmitAuthPrompt: (String, String, Boolean) -> Unit,
+    onClearAuthState: () -> Unit,
     onBack: () -> Unit,
 ) {
     val isNew = existingConfig == null
     val formState = rememberProviderFormState(existingConfig)
 
+    if (isNew) {
+        SubPageScaffold(
+            title = stringResource(R.string.settings_add_provider),
+            onBack = onBack,
+        ) {
+            AddProviderWizard(
+                state = formState,
+                existingProviderIds = existingProviderIds,
+                isFetchingModels = isFetchingModels,
+                onFetchModels = onFetchModels,
+                authState = authState,
+                onStartProviderLogin = onStartProviderLogin,
+                onSubmitAuthPrompt = onSubmitAuthPrompt,
+                onClearAuthState = onClearAuthState,
+                onSave = onSave,
+            )
+        }
+        return
+    }
+
     SubPageScaffold(
-        title = if (isNew) stringResource(R.string.settings_add_provider) else stringResource(R.string.settings_edit_provider),
+        title = stringResource(R.string.settings_edit_provider),
         onBack = onBack,
         trailingIcon = Icons.Rounded.Check,
         trailingEnabled = formState.isValid(existingProviderIds),
@@ -2666,6 +2690,10 @@ private fun ProviderEditPage(
             isFetchingModels = isFetchingModels,
             onFetchModels = onFetchModels,
             onModelEnabledChange = onModelEnabledChange,
+            authState = authState,
+            onStartProviderLogin = onStartProviderLogin,
+            onSubmitAuthPrompt = onSubmitAuthPrompt,
+            onClearAuthState = onClearAuthState,
         )
     }
 }
