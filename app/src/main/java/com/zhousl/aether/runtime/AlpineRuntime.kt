@@ -109,10 +109,7 @@ class AlpineRuntime(
     }
 
     suspend fun createTerminalLaunchSpec(): AlpineTerminalLaunchSpec = withContext(Dispatchers.IO) {
-        val setup = inspectSetup()
-        if (!setup.isReady) {
-            error(setup.detail.ifBlank { "Alpine runtime is not ready." })
-        }
+        requireReady()
         ensureWorkspace()
         ensureGuestNetworkConfig()
         val command = buildAlpineInteractiveCommand()
@@ -131,10 +128,7 @@ class AlpineRuntime(
         guestPath: String,
         executable: Boolean = false,
     ): File = withContext(Dispatchers.IO) {
-        val setup = inspectSetup()
-        if (!setup.isReady) {
-            error(setup.detail.ifBlank { "Alpine runtime is not ready." })
-        }
+        requireReady()
         val normalizedGuestPath = normalizePath(guestPath)
         val target = guestPathToHostFile(normalizedGuestPath)
         copyAsset(assetPath, target, executable)
@@ -147,15 +141,19 @@ class AlpineRuntime(
         redirectErrorStream: Boolean = false,
     ): Process = withContext(Dispatchers.IO) {
         val normalizedWorkingDirectory = normalizePath(workingDirectory)
-        val setup = inspectSetup()
-        if (!setup.isReady) {
-            error(setup.detail.ifBlank { "Alpine runtime is not ready." })
-        }
+        requireReady()
         ensureWorkspace()
         ensureGuestNetworkConfig()
         buildAlpineProcess(command, normalizedWorkingDirectory)
             .redirectErrorStream(redirectErrorStream)
             .start()
+    }
+
+    private suspend fun requireReady() {
+        val setup = inspectSetup()
+        if (!setup.isReady) {
+            error(setup.detail.ifBlank { "Alpine runtime is not ready." })
+        }
     }
 
     suspend fun installPackageProfile(profileId: String): LocalRuntimeSetupState {

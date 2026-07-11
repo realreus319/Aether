@@ -1,5 +1,8 @@
 import java.util.Properties
 import com.posthog.android.PostHogCliExecTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.Sync
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -84,6 +87,15 @@ val piProviderIconFiles = mapOf(
 fun npmExecutable(): String =
     if (System.getProperty("os.name").lowercase().contains("windows")) "npm.cmd" else "npm"
 
+abstract class SyncGeneratedSourceDirectory : Sync() {
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    init {
+        into(outputDirectory)
+    }
+}
+
 android {
     namespace = "com.zhousl.aether"
     compileSdk = 35
@@ -96,6 +108,10 @@ android {
         targetSdk = 28
         versionCode = 9
         versionName = appVersionName
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -179,8 +195,6 @@ android {
     }
 
     sourceSets {
-        getByName("main").assets.srcDir(piBridgeGeneratedAssetsDir)
-        getByName("main").res.srcDir(piProviderIconsGeneratedResDir)
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 }
@@ -273,15 +287,15 @@ val buildPiBridge = tasks.register<Exec>("buildPiBridge") {
     outputs.file(piBridgeProjectDir.file("dist/bridge.mjs"))
 }
 
-val copyPiProviderIcons = tasks.register<Copy>("copyPiProviderIcons") {
+val copyPiProviderIcons = tasks.register<SyncGeneratedSourceDirectory>("copyPiProviderIcons") {
     dependsOn(installPiBridgeDependencies)
     val iconSourceDir = piBridgeProjectDir.dir(
         "node_modules/@lobehub/icons-static-png/light",
     )
-    val iconOutputDir = piProviderIconsGeneratedResDir.map { it.dir("drawable-nodpi") }
-    into(iconOutputDir)
+    outputDirectory.set(piProviderIconsGeneratedResDir)
     piProviderIconFiles.forEach { (outputName, sourceName) ->
         from(iconSourceDir.file(sourceName)) {
+            into("drawable-nodpi")
             rename { outputName }
         }
     }
@@ -289,16 +303,27 @@ val copyPiProviderIcons = tasks.register<Copy>("copyPiProviderIcons") {
     piProviderIconFiles.values.distinct().forEach { sourceName ->
         inputs.file(iconSourceDir.file(sourceName))
     }
-    outputs.dir(iconOutputDir)
 }
 
-val copyPiBridgeAsset = tasks.register<Copy>("copyPiBridgeAsset") {
+val copyPiBridgeAsset = tasks.register<SyncGeneratedSourceDirectory>("copyPiBridgeAsset") {
     dependsOn(buildPiBridge)
+    outputDirectory.set(piBridgeGeneratedAssetsDir)
     from(piBridgeProjectDir.file("dist/bridge.mjs"))
-    into(piBridgeGeneratedAssetsDir.map { it.dir("pi-bridge") })
+    eachFile {
+        path = "pi-bridge/$path"
+    }
+    includeEmptyDirs = false
 }
 
-tasks.named("preBuild").configure {
-    dependsOn(copyPiBridgeAsset)
-    dependsOn(copyPiProviderIcons)
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            copyPiBridgeAsset,
+            SyncGeneratedSourceDirectory::outputDirectory,
+        )
+        variant.sources.res?.addGeneratedSourceDirectory(
+            copyPiProviderIcons,
+            SyncGeneratedSourceDirectory::outputDirectory,
+        )
+    }
 }

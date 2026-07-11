@@ -1370,6 +1370,7 @@ private class StdIoMcpTransport(
         appendLine("  attempt=\$((attempt + 1))")
         appendLine("done")
         appendLine("printf 'Timed out waiting for the MCP stdio broker to start.\\n' >&2")
+        appendLine("kill -TERM \"\$broker_pid\" 2>/dev/null || true")
         appendLine("exit 1")
     }
 
