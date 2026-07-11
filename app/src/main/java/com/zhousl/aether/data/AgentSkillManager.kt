@@ -472,38 +472,6 @@ class AgentSkillManager(
         }
     }
 
-    private fun resolveRemoteDownloadPlan(rawUrl: String): RemoteDownloadPlan {
-        val url = rawUrl.trim().ifBlank { error("A remote skill URL is required.") }
-        val httpUrl = url.toHttpUrlOrNull() ?: error("Skill URL is not a valid absolute URL.")
-        if (httpUrl.host.equals("github.com", ignoreCase = true)) {
-            val segments = httpUrl.pathSegments.filter { it.isNotBlank() }
-            require(segments.size >= 2) { "GitHub URL must include owner and repository." }
-            val owner = segments[0]
-            val repository = segments[1].removeSuffix(".git")
-            if (segments.size >= 4 && segments[2] == "tree") {
-                val ref = segments[3]
-                val subpath = segments.drop(4).joinToString("/")
-                return RemoteDownloadPlan(
-                    kind = SkillInstallKind.GitHub,
-                    downloadUrl = "https://api.github.com/repos/$owner/$repository/zipball/$ref",
-                    ref = ref,
-                    subpath = subpath,
-                )
-            }
-            return RemoteDownloadPlan(
-                kind = SkillInstallKind.GitHub,
-                downloadUrl = "https://api.github.com/repos/$owner/$repository/zipball",
-            )
-        }
-        require(httpUrl.encodedPath.lowercase(Locale.US).endsWith(".zip")) {
-            "Remote skill URL must be a GitHub repository/tree URL or a direct .zip file."
-        }
-        return RemoteDownloadPlan(
-            kind = SkillInstallKind.RemoteZip,
-            downloadUrl = httpUrl.toString(),
-        )
-    }
-
     private fun downloadZipIntoDirectory(
         url: String,
         destinationRoot: File,
@@ -754,7 +722,52 @@ private data class ParsedSkillDocument(
     val diagnostics: List<String>,
 )
 
-private data class RemoteDownloadPlan(
+internal fun resolveRemoteDownloadPlan(rawUrl: String): RemoteDownloadPlan {
+    val url = rawUrl.trim().ifBlank { error("A remote skill URL is required.") }
+    val httpUrl = url.toHttpUrlOrNull() ?: error("Skill URL is not a valid absolute URL.")
+    val isZipPath = httpUrl.encodedPath.lowercase(Locale.US).endsWith(".zip")
+    if (httpUrl.host.equals("github.com", ignoreCase = true)) {
+        val segments = httpUrl.pathSegments.filter { it.isNotBlank() }
+        require(segments.size >= 2) { "GitHub URL must include owner and repository." }
+        val owner = segments[0]
+        val repository = segments[1].removeSuffix(".git")
+        if (segments.size >= 4 && segments[2] == "tree") {
+            val ref = segments[3]
+            val subpath = segments.drop(4).joinToString("/")
+            return RemoteDownloadPlan(
+                kind = SkillInstallKind.GitHub,
+                downloadUrl = "https://api.github.com/repos/$owner/$repository/zipball/$ref",
+                ref = ref,
+                subpath = subpath,
+            )
+        }
+        if (isZipPath) {
+            return RemoteDownloadPlan(
+                kind = SkillInstallKind.RemoteZip,
+                downloadUrl = httpUrl.toString(),
+            )
+        }
+        return RemoteDownloadPlan(
+            kind = SkillInstallKind.GitHub,
+            downloadUrl = "https://api.github.com/repos/$owner/$repository/zipball",
+        )
+    }
+    require(isZipPath || isGitHubCodeloadZipUrl(httpUrl.host, httpUrl.pathSegments)) {
+        "Remote skill URL must be a GitHub repository/tree URL or a direct .zip file."
+    }
+    return RemoteDownloadPlan(
+        kind = SkillInstallKind.RemoteZip,
+        downloadUrl = httpUrl.toString(),
+    )
+}
+
+private fun isGitHubCodeloadZipUrl(
+    host: String,
+    pathSegments: List<String>,
+): Boolean = host.equals("codeload.github.com", ignoreCase = true) &&
+    pathSegments.getOrNull(2)?.equals("zip", ignoreCase = true) == true
+
+internal data class RemoteDownloadPlan(
     val kind: SkillInstallKind,
     val downloadUrl: String,
     val ref: String = "",
