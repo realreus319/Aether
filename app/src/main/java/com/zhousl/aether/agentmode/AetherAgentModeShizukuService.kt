@@ -58,6 +58,7 @@ class AetherAgentModeShizukuService @Keep constructor(
     private val imageReaders = ConcurrentHashMap<Int, ImageReader>()
     private val previewSurfaces = ConcurrentHashMap<Int, Surface>()
     private val displayLocks = ConcurrentHashMap<Int, Any>()
+    private val displaysWithLaunchedContent = ConcurrentHashMap.newKeySet<Int>()
 
     override fun createDisplay(
         name: String,
@@ -130,6 +131,7 @@ class AetherAgentModeShizukuService @Keep constructor(
             previewSurfaces.remove(displayId)
             displays.remove(displayId)?.release()
             imageReaders.remove(displayId)?.close()
+            displaysWithLaunchedContent.remove(displayId)
             displayLocks.remove(displayId)
         }
     }
@@ -140,6 +142,7 @@ class AetherAgentModeShizukuService @Keep constructor(
         }
         previewSurfaces.clear()
         imageReaders.clear()
+        displaysWithLaunchedContent.clear()
         displayLocks.clear()
         System.exit(0)
     }
@@ -173,6 +176,7 @@ class AetherAgentModeShizukuService @Keep constructor(
             null,
             options.toBundle(),
         )
+        displaysWithLaunchedContent.add(displayId)
     }
 
     override fun runInputCommand(command: String) {
@@ -295,18 +299,30 @@ class AetherAgentModeShizukuService @Keep constructor(
             val previewSurface = previewSurfaces[displayId]?.takeIf { it.isValid }
             display.setSurface(reader.surface)
             try {
-                val image = awaitLatestImage(displayId, reader)
-                try {
-                    ParcelFileDescriptor.AutoCloseOutputStream(output).use { stream ->
-                        imageToJpegStream(
-                            image = image,
+                val image = awaitLatestImage(reader)
+                ParcelFileDescriptor.AutoCloseOutputStream(output).use { stream ->
+                    if (image != null) {
+                        try {
+                            imageToJpegStream(
+                                image = image,
+                                output = stream,
+                                maxEdge = boundedMaxEdge,
+                                quality = boundedQuality,
+                            )
+                        } finally {
+                            image.close()
+                        }
+                    } else if (!displaysWithLaunchedContent.contains(displayId)) {
+                        blankImageToJpegStream(
+                            width = reader.width,
+                            height = reader.height,
                             output = stream,
                             maxEdge = boundedMaxEdge,
                             quality = boundedQuality,
                         )
+                    } else {
+                        error("Timed out while capturing display $displayId.")
                     }
-                } finally {
-                    image.close()
                 }
             } finally {
                 if (previewSurface != null && displays[displayId] === display) {
@@ -326,13 +342,41 @@ class AetherAgentModeShizukuService @Keep constructor(
         }
     }
 
-    private fun awaitLatestImage(displayId: Int, reader: ImageReader): Image {
+    private fun awaitLatestImage(reader: ImageReader): Image? {
         val deadline = SystemClock.uptimeMillis() + 2_000L
         while (SystemClock.uptimeMillis() < deadline) {
             reader.acquireLatestImage()?.let { return it }
             SystemClock.sleep(16L)
         }
-        error("Timed out while capturing display $displayId.")
+        return null
+    }
+
+    private fun blankImageToJpegStream(
+        width: Int,
+        height: Int,
+        output: OutputStream,
+        maxEdge: Int,
+        quality: Int,
+    ) {
+        val bitmap = Bitmap.createBitmap(
+            width.coerceAtLeast(1),
+            height.coerceAtLeast(1),
+            Bitmap.Config.ARGB_8888,
+        )
+        try {
+            bitmap.eraseColor(android.graphics.Color.BLACK)
+            val scaledBitmap = scaleBitmapIfNeeded(bitmap, maxEdge)
+            try {
+                if (!scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                    error("Unable to encode empty Agent Mode screenshot.")
+                }
+                output.flush()
+            } finally {
+                if (scaledBitmap !== bitmap) scaledBitmap.recycle()
+            }
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun imageToJpegStream(

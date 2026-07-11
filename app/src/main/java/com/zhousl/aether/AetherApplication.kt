@@ -112,14 +112,13 @@ class AetherAppRuntime(
         alpineRuntime = alpineRuntime,
         diagnosticLogger = diagnosticLogger,
     )
-    val piCompletionClient = PiCompletionClient(piKernelBridge)
+    val piCompletionClient = PiCompletionClient(
+        bridge = piKernelBridge,
+        settingsRepository = settingsRepository,
+    )
     val runtimeRouter = RuntimeRouter(
         termuxRuntime = termuxRuntime,
         alpineRuntime = alpineRuntime,
-    )
-    val piAgentRunner = PiAgentRunner(
-        bridge = piKernelBridge,
-        toolExecutor = AetherToolExecutor(runtimeRouter),
     )
     val rootSetupController = RootSetupController(
         context = application,
@@ -141,6 +140,18 @@ class AetherAppRuntime(
         extensionsRepository = extensionsRepository,
     )
     val webToolsClient = WebToolsClient()
+    val piAgentRunner = PiAgentRunner(
+        bridge = piKernelBridge,
+        settingsRepository = settingsRepository,
+        toolExecutor = AetherToolExecutor(
+            runtimeRouter = runtimeRouter,
+            skillManager = skillManager,
+            webToolsClient = webToolsClient,
+            workspaceFileBridge = workspaceFileBridge,
+            piCompletionClient = piCompletionClient,
+            agentModeController = agentModeController,
+        ),
+    )
     val appForegroundTracker = AppForegroundTracker()
     val notificationController = AetherNotificationController(application)
     val scheduledTaskScheduler = ScheduledTaskScheduler(
@@ -169,7 +180,6 @@ class AetherAppRuntime(
         agentModeController = agentModeController,
         skillManager = skillManager,
         scheduledTaskManager = scheduledTaskManager,
-        webToolsClient = webToolsClient,
         notificationController = notificationController,
         appForegroundTracker = appForegroundTracker,
         diagnosticLogger = diagnosticLogger,
@@ -190,6 +200,9 @@ class AetherAppRuntime(
         )
         notificationController.ensureChannels()
         ProcessLifecycleOwner.get().lifecycle.addObserver(appForegroundTracker)
+        appScope.launch {
+            settingsRepository.migrateLegacyProvidersToPi()
+        }
         appScope.launch {
             if (settingsRepository.settings.first().privacyPolicyAccepted) {
                 initializePostHog()

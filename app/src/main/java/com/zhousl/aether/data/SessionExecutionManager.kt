@@ -125,13 +125,11 @@ class SessionExecutionManager(
     private val agentModeController: AgentModeController,
     private val skillManager: AgentSkillManager,
     private val scheduledTaskManager: ScheduledTaskManager,
-    private val webToolsClient: WebToolsClient,
     private val notificationController: AetherNotificationController,
     private val appForegroundTracker: AppForegroundTracker,
     private val diagnosticLogger: AetherDiagnosticLogger = AetherDiagnosticLogger.NoOp,
     private val piCompletionClient: PiCompletionClient? = null,
-    @Suppress("unused")
-    private val piAgentRunner: PiAgentRunner? = null,
+    private val piAgentRunner: PiAgentRunner,
 ) {
     private val currentSettings = MutableStateFlow(AppSettings())
     private val currentProviderConfigs = MutableStateFlow<List<LlmProviderConfig>>(emptyList())
@@ -215,7 +213,7 @@ class SessionExecutionManager(
             event = "turn_queued",
             sessionId = request.sessionId,
             details = mapOf(
-                "provider" to request.settings.provider.storageValue,
+                "provider" to request.settings.piProviderId,
                 "model" to request.settings.modelId,
                 "base_url" to DiagnosticRedactor.sanitizedBaseUrl(request.settings.baseUrl),
                 "request_message_count" to request.requestMessages.size,
@@ -451,7 +449,7 @@ class SessionExecutionManager(
             turnId = turnId,
             details = mapOf(
                 "session_title" to resolveSessionTitle(handle.sessionId),
-                "provider" to request.settings.provider.storageValue,
+                "provider" to request.settings.piProviderId,
                 "model" to request.settings.modelId,
                 "base_url" to DiagnosticRedactor.sanitizedBaseUrl(request.settings.baseUrl),
             ),
@@ -461,27 +459,16 @@ class SessionExecutionManager(
             settings = request.settings,
             diagnosticLogger = diagnosticLogger,
         )
-        val agent = AetherAgent(
-            client = OpenAiCompatibleClient(diagnosticLogger = diagnosticLogger),
-            runtimeRouter = runtimeRouter,
-            workspaceFileBridge = workspaceFileBridge,
-            agentModeController = agentModeController,
+        val selfManagementTool = AetherSelfManagementTool(
+            settingsRepository = settingsRepository,
+            extensionsRepository = extensionsRepository,
             skillManager = skillManager,
+            bashTool = bashTool,
+            rootSetupController = rootSetupController,
+            agentModeController = agentModeController,
             mcpClientManager = mcpClientManager,
-            webToolsClient = webToolsClient,
-            selfManagementTool = AetherSelfManagementTool(
-                settingsRepository = settingsRepository,
-                extensionsRepository = extensionsRepository,
-                skillManager = skillManager,
-                bashTool = bashTool,
-                rootSetupController = rootSetupController,
-                agentModeController = agentModeController,
-                mcpClientManager = mcpClientManager,
-                scheduledTaskManager = scheduledTaskManager,
-                diagnosticLogger = diagnosticLogger,
-            ),
+            scheduledTaskManager = scheduledTaskManager,
             diagnosticLogger = diagnosticLogger,
-            onParallelToolCallsUnsupported = settingsRepository::markParallelToolCallsUnsupported,
         )
 
         updateExecutionState(handle.sessionId) {
@@ -558,7 +545,7 @@ class SessionExecutionManager(
                 }
             }
 
-            val result = agent.runTurn(
+            val result = piAgentRunner.runTurn(
                 settings = request.settings,
                 messages = buildRequestMessages(
                     messages = request.requestMessages,
@@ -568,8 +555,11 @@ class SessionExecutionManager(
                 availableSkills = resolvedAvailableSkills,
                 activeSkills = resolvedActiveSkills,
                 mcpToolBindings = mcpClientManager.toolBindings(),
+                mcpClientManager = mcpClientManager,
+                selfManagementTool = selfManagementTool,
                 agentModeEnabled = request.agentModeEnabled,
                 providerConfigs = request.providerConfigs,
+                sessionId = handle.sessionId,
                 onToolEvent = emitToolEvent,
                 onToolProgress = if (request.settings.termuxLiveOutputEnabled) emitToolEvent else null,
                 onAssistantReasoningDelta = { delta ->
@@ -693,6 +683,7 @@ class SessionExecutionManager(
                         turnCompletedAtMillis = turnCompletedAtMillis,
                         inputMessageCount = request.requestMessages.size,
                         userMessageCount = request.requestMessages.count { it.author == MessageAuthor.User },
+                        providerPayloadJson = turnResult.providerPayloadJson,
                         handle = handle,
                     )
                 },
@@ -883,6 +874,7 @@ class SessionExecutionManager(
         turnCompletedAtMillis: Long? = null,
         inputMessageCount: Int = 0,
         userMessageCount: Int = 0,
+        providerPayloadJson: String = "",
         handle: SessionExecutionHandle? = null,
         baseMessages: List<ChatMessage> = handle?.retainedMessagesSnapshot().orEmpty(),
     ): CompletionSummary {
@@ -903,6 +895,7 @@ class SessionExecutionManager(
                 firstTokenAtMillis = firstTokenAtMillis,
                 turnCompletedAtMillis = turnCompletedAtMillis,
             ),
+            providerPayloadJson = providerPayloadJson,
         )
 
         chatStateStore.update { persisted ->
@@ -1026,6 +1019,7 @@ class SessionExecutionManager(
         thoughtDurationMillis: Long?,
         assistantActionsHidden: Boolean,
         usageStatistics: ChatUsageStatistics? = null,
+        providerPayloadJson: String = "",
     ): List<ChatMessage> {
         val messageTimestamp = System.currentTimeMillis()
         val responseGroupId = "agent-group-$messageTimestamp"
@@ -1087,11 +1081,18 @@ class SessionExecutionManager(
                             get(lastIndex).copy(
                                 thoughtDurationMillis = thoughtDurationMillis,
                                 usageStatistics = usageStatistics,
+                                providerPayloadJson = providerPayloadJson,
                             ),
                         )
                     } else {
                         val lastIndex = lastIndex
-                        set(lastIndex, get(lastIndex).copy(usageStatistics = usageStatistics))
+                        set(
+                            lastIndex,
+                            get(lastIndex).copy(
+                                usageStatistics = usageStatistics,
+                                providerPayloadJson = providerPayloadJson,
+                            ),
+                        )
                     }
                 }
             }
@@ -1355,11 +1356,8 @@ class SessionExecutionManager(
     }
 
     private fun validateSettings(settings: AppSettings): String? = when {
-        settings.provider == LlmProvider.VertexExpress && settings.apiKey.isBlank() ->
-            "API Key is required before sending with Vertex AI (Express Mode)."
-
-        settings.baseUrl.isBlank() || settings.modelId.isBlank() ->
-            "Base URL and Model ID are required before sending."
+        !settings.isProviderSetupValid() ->
+            "The selected provider is not fully configured."
 
         else -> null
     }
@@ -1474,54 +1472,6 @@ class SessionExecutionManager(
         return listOfNotNull(metadataPart, imagePart)
     }
 
-    private fun buildProviderUserMessage(
-        settings: AppSettings,
-        text: String,
-    ): JSONObject = when (settings.provider) {
-        LlmProvider.OpenAiResponses -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "content",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("type", "input_text")
-                        put("text", text)
-                    }
-                )
-            )
-        }
-
-        LlmProvider.OpenAiCompatible -> JSONObject().apply {
-            put("role", "user")
-            put("content", text)
-        }
-
-        LlmProvider.VertexExpress -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "parts",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("text", text)
-                    }
-                )
-            )
-        }
-
-        LlmProvider.AnthropicMessages -> JSONObject().apply {
-            put("role", "user")
-            put(
-                "content",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("type", "text")
-                        put("text", text)
-                    }
-                )
-            )
-        }
-    }
-
     private fun formatBytes(bytes: Long): String = when {
         bytes >= 1024 * 1024 -> String.format("%.1f MB", bytes / (1024f * 1024f))
         bytes >= 1024 -> String.format("%.1f KB", bytes / 1024f)
@@ -1542,7 +1492,6 @@ class SessionExecutionManager(
     }
 
     private fun AppSettings.supportsVisibleReasoningTrace(): Boolean {
-        if (provider != LlmProvider.OpenAiCompatible) return false
         return baseUrl.contains("deepseek", ignoreCase = true) ||
             baseUrl.contains("openrouter", ignoreCase = true) ||
             modelId.contains("deepseek", ignoreCase = true) ||
@@ -2026,7 +1975,7 @@ class SessionExecutionManager(
             preferredModelKey = resolveDefaultTitleModelKey(settings, providerConfigs),
             fallbackModelKey = resolveDefaultChatModelKey(settings, providerConfigs),
         )
-        if (!isProviderSetupValid(titleSettings.provider, titleSettings.apiKey, titleSettings.baseUrl, titleSettings.modelId)) {
+        if (!titleSettings.isProviderSetupValid()) {
             return null
         }
         val prompt = buildString {
@@ -2055,14 +2004,7 @@ class SessionExecutionManager(
                 )
             ),
             disableReasoning = true,
-        )?.getOrNull()?.assistantText?.trim().orEmpty().ifBlank {
-            OpenAiCompatibleClient().createChatCompletion(
-                settings = titleSettings,
-                systemPrompt = ReasoningSummarySystemPrompt,
-                conversation = listOf(buildProviderUserMessage(titleSettings, prompt)),
-                disableReasoning = true,
-            ).getOrNull()?.assistantText.orEmpty().trim()
-        }
+        )?.getOrNull()?.assistantText?.trim().orEmpty()
         return parseReasoningSummary(result)
     }
 

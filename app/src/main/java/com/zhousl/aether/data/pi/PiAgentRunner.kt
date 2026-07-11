@@ -1,29 +1,34 @@
 package com.zhousl.aether.data.pi
 
 import com.zhousl.aether.data.ActiveSkillContext
-import com.zhousl.aether.data.AetherToolExecutor
 import com.zhousl.aether.data.AetherAgentTurnResult
+import com.zhousl.aether.data.AetherSelfManagementTool
+import com.zhousl.aether.data.AetherToolExecutor
 import com.zhousl.aether.data.AgentToolEvent
 import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.InstalledSkill
 import com.zhousl.aether.data.LlmMessage
 import com.zhousl.aether.data.LlmProviderConfig
+import com.zhousl.aether.data.McpClientManager
 import com.zhousl.aether.data.McpToolBinding
 import com.zhousl.aether.data.StreamingStatus
+import com.zhousl.aether.data.SettingsRepository
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * First-stage Pi runner that preserves AetherAgent.runTurn callback semantics.
- *
- * It intentionally does not replace AetherAgent by default until host tool execution,
- * dynamic MCP tool registration, and Pi harness session replay are complete. The
- * JSONL/event contract here is the compatibility surface the later harness runner
- * will keep.
- */
+private const val InjectedMessagePollIntervalMillis = 150L
+
 class PiAgentRunner(
     private val bridge: PiKernelBridge,
     private val toolExecutor: AetherToolExecutor? = null,
+    private val settingsRepository: SettingsRepository? = null,
 ) {
     suspend fun runTurn(
         settings: AppSettings,
@@ -32,6 +37,8 @@ class PiAgentRunner(
         availableSkills: List<InstalledSkill> = emptyList(),
         activeSkills: List<ActiveSkillContext> = emptyList(),
         mcpToolBindings: List<McpToolBinding> = emptyList(),
+        mcpClientManager: McpClientManager? = null,
+        selfManagementTool: AetherSelfManagementTool? = null,
         agentModeEnabled: Boolean = false,
         providerConfigs: List<LlmProviderConfig> = emptyList(),
         sessionId: String = "",
@@ -39,115 +46,202 @@ class PiAgentRunner(
         onToolProgress: (suspend (AgentToolEvent) -> Unit)? = null,
         onAssistantTextDelta: suspend (String) -> Unit = {},
         onAssistantReasoningDelta: suspend (String) -> Unit = {},
+        onAssistantReasoningSummaryDelta: suspend (String) -> Unit = {},
+        onAssistantTextReset: suspend () -> Unit = {},
         onStreamingStatus: suspend (StreamingStatus?) -> Unit = {},
-    ): Result<AetherAgentTurnResult> = runCatching {
-        onStreamingStatus(StreamingStatus("Thinking", "Pi bridge is running this turn."))
-        val payload = JSONObject().apply {
-            put("model_config", settings.toPiModelConfig().toJson())
-            if (sessionId.isNotBlank()) put("session_id", sessionId)
-            put("system_prompt", settings.systemPrompt)
-            put("messages", messages.toPiJson())
-            put("workspace_directory", workspaceDirectory)
-            put("available_skills", JSONArray().apply {
-                availableSkills.forEach { skill ->
-                    put(
-                        JSONObject().apply {
-                            put("id", skill.id)
-                            put("name", skill.name)
-                            put("description", skill.description)
-                        }
+        onSkillActivated: suspend (ActiveSkillContext) -> Unit = {},
+        pollInjectedUserMessages: suspend () -> List<LlmMessage> = { emptyList() },
+    ): Result<AetherAgentTurnResult> {
+        onStreamingStatus(StreamingStatus("Thinking", "Aether is working on this turn."))
+        return try {
+            runCatchingPreservingCancellation {
+                val resolvedSessionId = sessionId.ifBlank {
+                    "aether-session-${System.currentTimeMillis()}"
+                }
+                val resolvedAvailableSkills = availableSkills
+                    .filter { it.isEnabled }
+                    .sortedBy { it.name.lowercase() }
+                val resolvedActiveSkills = activeSkills.toMutableList()
+                val prompt = {
+                    buildPiAgentInstructions(
+                        settings = settings,
+                        workspaceDirectory = workspaceDirectory,
+                        availableSkills = resolvedAvailableSkills,
+                        activeSkills = resolvedActiveSkills,
+                        mcpSnapshots = mcpClientManager?.snapshots().orEmpty(),
+                        mcpToolBindings = mcpToolBindings,
+                        agentModeEnabled = agentModeEnabled,
                     )
                 }
-            })
-            put("active_skills", JSONArray().apply {
-                activeSkills.forEach { skill ->
+                val payload = JSONObject().apply {
+                    put("model_config", settings.toPiModelConfig().toJson())
+                    put("session_id", resolvedSessionId)
+                    put("system_prompt", prompt())
+                    put("messages", messages.toPiJson())
+                    put("workspace_directory", workspaceDirectory)
+                    put("reasoning", settings.toPiThinkingLevel())
                     put(
-                        JSONObject().apply {
-                            put("skill_id", skill.skillId)
-                            put("name", skill.name)
-                            put("root_path", skill.skillRootPath)
-                        }
+                        "host_tools",
+                        AetherToolExecutor.hostToolDefinitions(
+                            selfManagementTool = selfManagementTool,
+                            mcpClientManager = mcpClientManager,
+                            mcpToolBindings = mcpToolBindings,
+                            agentModeEnabled = agentModeEnabled,
+                        ),
                     )
                 }
-            })
-            put("mcp_tool_bindings", JSONArray().apply {
-                mcpToolBindings.forEach { binding ->
-                    put(
-                        JSONObject().apply {
-                            put("server_id", binding.serverId)
-                            put("server_name", binding.serverName)
-                            put("tool_name", binding.toolName)
-                            put("namespaced_name", binding.namespacedToolName)
-                            put("description", binding.description)
-                            put("input_schema", binding.inputSchema)
+
+                val eventHandler: suspend (String, JSONObject) -> Unit = { event, eventPayload ->
+                    when (event) {
+                        "assistant_text_delta" ->
+                            onAssistantTextDelta(eventPayload.optString("delta"))
+
+                        "assistant_reasoning_delta" -> {
+                            val delta = eventPayload.optString("delta")
+                            onAssistantReasoningDelta(delta)
+                            if (eventPayload.optString("kind") == "summary") {
+                                onAssistantReasoningSummaryDelta(delta)
+                            }
                         }
-                    )
-                }
-            })
-            put("agent_mode_enabled", agentModeEnabled)
-            put("provider_config_count", providerConfigs.size)
-            if (toolExecutor != null) {
-                put("host_tools", AetherToolExecutor.hostToolDefinitions())
-            }
-        }
-        val response = bridge.runTurn(payload) { event, eventPayload ->
-            when (event) {
-                "assistant_text_delta" -> onAssistantTextDelta(eventPayload.optString("delta"))
-                "assistant_reasoning_delta" -> onAssistantReasoningDelta(eventPayload.optString("delta"))
-                "tool_call_start" -> onToolEvent(eventPayload.toToolEvent(isRunning = true))
-                "tool_call_delta" -> {
-                    val toolEvent = eventPayload.toToolEvent(isRunning = true)
-                    if (toolEvent.outputJson == null) {
-                        onToolEvent(toolEvent)
-                    } else {
-                        (onToolProgress ?: onToolEvent)(toolEvent)
+
+                        "tool_call_start" -> {
+                            onAssistantTextReset()
+                            onToolEvent(eventPayload.toToolEvent(isRunning = true))
+                        }
+
+                        "tool_call_delta" -> {
+                            val toolEvent = eventPayload.toToolEvent(isRunning = true)
+                            if (toolEvent.outputJson == null) {
+                                onToolEvent(toolEvent)
+                            } else {
+                                (onToolProgress ?: onToolEvent)(toolEvent)
+                            }
+                        }
+
+                        "tool_call_end" ->
+                            onToolEvent(eventPayload.toToolEvent(isRunning = false))
+
+                        "host_tool_request" -> handleHostToolRequest(
+                            payload = eventPayload,
+                            sessionId = resolvedSessionId,
+                            settings = settings,
+                            workspaceDirectory = workspaceDirectory,
+                            availableSkills = resolvedAvailableSkills,
+                            activeSkills = resolvedActiveSkills,
+                            providerConfigs = providerConfigs,
+                            mcpClientManager = mcpClientManager,
+                            selfManagementTool = selfManagementTool,
+                            mcpToolBindings = mcpToolBindings,
+                            agentModeEnabled = agentModeEnabled,
+                            updatedSystemPrompt = prompt,
+                            onSkillActivated = onSkillActivated,
+                        )
+
+                        "assistant_error" -> onStreamingStatus(
+                            StreamingStatus(
+                                text = "Agent engine error",
+                                detail = eventPayload.optString("error_message"),
+                            )
+                        )
                     }
                 }
-                "tool_call_end" -> onToolEvent(eventPayload.toToolEvent(isRunning = false))
-                "host_tool_request" -> handleHostToolRequest(
-                    payload = eventPayload,
-                    settings = settings,
-                    workspaceDirectory = workspaceDirectory,
-                )
-                "assistant_error" -> onStreamingStatus(
-                    StreamingStatus(
-                        text = "Pi bridge error",
-                        detail = eventPayload.optString("error_message"),
+
+                val deferredInjectedMessages = ConcurrentLinkedQueue<LlmMessage>()
+                suspend fun forwardInjectedMessages() {
+                    pollInjectedUserMessages().forEach { message ->
+                        val accepted = runCatching {
+                            bridge.steer(resolvedSessionId, message.toPiJson())
+                                .optBoolean("accepted")
+                        }.getOrElse { throwable ->
+                            if (throwable is CancellationException) throw throwable
+                            false
+                        }
+                        if (!accepted) {
+                            deferredInjectedMessages += message
+                        }
+                    }
+                }
+
+                var response = coroutineScope {
+                    val pollingJob = launch {
+                        while (isActive) {
+                            forwardInjectedMessages()
+                            delay(InjectedMessagePollIntervalMillis)
+                        }
+                    }
+                    try {
+                        bridge.runTurn(payload, eventHandler)
+                    } finally {
+                        pollingJob.cancelAndJoin()
+                    }
+                }
+
+                forwardInjectedMessages()
+                while (true) {
+                    val injected = deferredInjectedMessages.poll() ?: break
+                    response = bridge.followUp(
+                        sessionId = resolvedSessionId,
+                        message = injected.toPiJson(),
+                        onEvent = eventHandler,
                     )
+                }
+
+                val completion = response.toPiCompletionResult()
+                if (
+                    settings.providerConfigId.isNotBlank() &&
+                    completion.updatedOauthCredentialJson.isNotBlank()
+                ) {
+                    settingsRepository?.updateProviderOAuthCredential(
+                        settings.providerConfigId,
+                        completion.updatedOauthCredentialJson,
+                    )
+                }
+                if (completion.errorMessage.isNotBlank()) {
+                    error(completion.errorMessage)
+                }
+                AetherAgentTurnResult(
+                    assistantText = completion.assistantText.ifBlank {
+                        "The model finished without returning any assistant text."
+                    },
+                    tokenUsage = completion.usage,
+                    providerPayloadJson = completion.toProviderPayloadJson(),
                 )
             }
+        } finally {
+            onStreamingStatus(null)
         }
-        onStreamingStatus(null)
-        val result = response.toPiCompletionResult()
-        if (result.errorMessage.isNotBlank()) {
-            error(result.errorMessage)
-        }
-        AetherAgentTurnResult(
-            assistantText = result.assistantText,
-            tokenUsage = result.usage,
-        )
-    }.also {
-        onStreamingStatus(null)
     }
 
     private suspend fun handleHostToolRequest(
         payload: JSONObject,
+        sessionId: String,
         settings: AppSettings,
         workspaceDirectory: String,
+        availableSkills: List<InstalledSkill>,
+        activeSkills: MutableList<ActiveSkillContext>,
+        providerConfigs: List<LlmProviderConfig>,
+        mcpClientManager: McpClientManager?,
+        selfManagementTool: AetherSelfManagementTool?,
+        mcpToolBindings: List<McpToolBinding>,
+        agentModeEnabled: Boolean,
+        updatedSystemPrompt: () -> String,
+        onSkillActivated: suspend (ActiveSkillContext) -> Unit,
     ) {
         val toolRequestId = payload.optString("tool_request_id").trim()
         val toolCallId = payload.optString("tool_call_id").trim()
         val toolName = payload.optString("tool_name").trim()
         if (toolRequestId.isBlank()) return
 
+        val argumentsJson = payload.argumentsJson()
         val executor = toolExecutor
         if (executor == null || !AetherToolExecutor.supports(toolName)) {
             bridge.sendHostToolResult(
                 hostToolPayload(
+                    sessionId = sessionId,
                     toolRequestId = toolRequestId,
                     toolCallId = toolCallId,
                     toolName = toolName.ifBlank { "unknown" },
-                    argumentsJson = payload.argumentsJson(),
+                    argumentsJson = argumentsJson,
                     rawOutput = JSONObject().apply {
                         put("ok", false)
                         put("errmsg", "Host tool '$toolName' is not available.")
@@ -158,16 +252,22 @@ class PiAgentRunner(
             return
         }
 
-        val argumentsJson = payload.argumentsJson()
         val result = runCatching {
             executor.execute(
                 settings = settings,
                 workspaceDirectory = workspaceDirectory,
                 toolName = toolName,
                 argumentsJson = argumentsJson,
+                availableSkills = availableSkills,
+                activeSkills = activeSkills,
+                providerConfigs = providerConfigs,
+                mcpClientManager = mcpClientManager,
+                selfManagementTool = selfManagementTool,
+                agentModeEnabled = agentModeEnabled,
                 onProgress = { progress ->
                     bridge.sendHostToolProgress(
                         hostToolPayload(
+                            sessionId = sessionId,
                             toolRequestId = toolRequestId,
                             toolCallId = toolCallId,
                             toolName = toolName,
@@ -179,12 +279,14 @@ class PiAgentRunner(
                         )
                     )
                 },
+                onSkillActivated = onSkillActivated,
             )
         }
 
         val responsePayload = result.fold(
             onSuccess = { executionResult ->
                 hostToolPayload(
+                    sessionId = sessionId,
                     toolRequestId = toolRequestId,
                     toolCallId = toolCallId,
                     toolName = toolName,
@@ -192,10 +294,13 @@ class PiAgentRunner(
                     rawOutput = executionResult.rawOutput,
                     visibleOutput = executionResult.visibleOutput,
                     isError = executionResult.isError,
+                    systemPrompt = updatedSystemPrompt(),
                 )
             },
             onFailure = { throwable ->
+                if (throwable is CancellationException) throw throwable
                 hostToolPayload(
+                    sessionId = sessionId,
                     toolRequestId = toolRequestId,
                     toolCallId = toolCallId,
                     toolName = toolName,
@@ -246,6 +351,7 @@ private fun JSONObject.outputJson(): String? {
 }
 
 private fun hostToolPayload(
+    sessionId: String,
     toolRequestId: String,
     toolCallId: String,
     toolName: String,
@@ -253,7 +359,9 @@ private fun hostToolPayload(
     rawOutput: String,
     visibleOutput: String = AetherToolExecutor.sanitizeToolOutputForConversation(toolName, rawOutput),
     isError: Boolean,
+    systemPrompt: String = "",
 ): JSONObject = JSONObject().apply {
+    put("session_id", sessionId)
     put("tool_request_id", toolRequestId)
     put("tool_call_id", toolCallId)
     put("tool_name", toolName)
@@ -261,14 +369,33 @@ private fun hostToolPayload(
     put("output_json", visibleOutput)
     put("raw_output_json", rawOutput)
     put("is_error", isError)
+    if (systemPrompt.isNotBlank()) put("system_prompt", systemPrompt)
     put(
         "content",
-        JSONArray().put(
-            JSONObject().apply {
-                put("type", "text")
-                put("text", visibleOutput)
+        JSONArray().apply {
+            put(
+                JSONObject().apply {
+                    put("type", "text")
+                    put("text", visibleOutput)
+                }
+            )
+            if (toolName == "agent_display") {
+                val parsed = runCatching { JSONObject(rawOutput) }.getOrNull()
+                val imageData = parsed?.optString("screenshot_base64").orEmpty()
+                if (parsed?.optBoolean("ok") == true && imageData.isNotBlank()) {
+                    put(
+                        JSONObject().apply {
+                            put("type", "image")
+                            put(
+                                "mime_type",
+                                parsed.optString("screenshot_mime_type").ifBlank { "image/png" },
+                            )
+                            put("data", imageData)
+                        }
+                    )
+                }
             }
-        ),
+        },
     )
     put(
         "details",
@@ -278,8 +405,17 @@ private fun hostToolPayload(
             put("tool_name", toolName)
             put("arguments_json", argumentsJson)
             put("output_json", visibleOutput)
-            put("raw_output_json", rawOutput)
             put("is_error", isError)
         },
     )
+}
+
+private inline fun <T> runCatchingPreservingCancellation(
+    block: () -> T,
+): Result<T> = try {
+    Result.success(block())
+} catch (cancellationException: CancellationException) {
+    throw cancellationException
+} catch (throwable: Throwable) {
+    Result.failure(throwable)
 }

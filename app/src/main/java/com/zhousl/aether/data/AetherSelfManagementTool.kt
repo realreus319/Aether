@@ -1006,9 +1006,19 @@ class AetherSelfManagementTool(
             JSONObject().apply {
                 put("name", name)
                 put("description", description)
-                put("parameters", buildStrictToolParameters(properties, required))
+                put("parameters", buildPiToolParameters(properties, required))
             },
         )
+    }
+
+    private fun buildPiToolParameters(
+        properties: JSONObject,
+        required: List<String>,
+    ): JSONObject = JSONObject().apply {
+        put("type", "object")
+        put("properties", JSONObject(properties.toString()))
+        put("required", JSONArray(required))
+        put("additionalProperties", false)
     }
 
     private fun keyValueArraySchema(description: String): JSONObject =

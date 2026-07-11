@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -193,7 +194,9 @@ class TermuxBashTool(
                 onProgress = onProgress,
             )
         } catch (cancellationException: CancellationException) {
-            runCatching { killExecutionByRunId(runId) }
+            withContext(NonCancellable) {
+                runCatching { killExecutionByRunId(runId) }
+            }
             throw cancellationException
         }
     }
@@ -207,7 +210,7 @@ class TermuxBashTool(
         if (!lastManagedBashRunPruneAtMillis.compareAndSet(previousPruneMillis, nowMillis)) return
 
         val retentionMillis = oldCommandHistoryRetentionHours.get() * 60L * 60L * 1000L
-        val raw = runCatching {
+        val raw = try {
             JSONObject(
                 dispatchCommand(
                     command = buildPruneExpiredManagedBashRunsScript(retentionMillis),
@@ -215,7 +218,9 @@ class TermuxBashTool(
                     awaitTimeoutMillis = InternalCommandTimeoutMillis,
                 )
             )
-        }.getOrElse { throwable ->
+        } catch (cancellationException: CancellationException) {
+            throw cancellationException
+        } catch (throwable: Throwable) {
             lastManagedBashRunPruneAtMillis.set(0L)
             diagnosticLogger.exception(
                 category = "storage",
@@ -338,14 +343,18 @@ class TermuxBashTool(
         workingDirectoryFallback: String = "",
         runIdFallback: String = "",
     ): String {
-        val raw = runCatching {
+        val raw = try {
             JSONObject(
                 dispatchCommand(
                     command = script,
                     workingDirectory = TermuxContract.HomeDirectory,
                 )
             )
-        }.getOrNull()
+        } catch (cancellationException: CancellationException) {
+            throw cancellationException
+        } catch (_: Throwable) {
+            null
+        }
             ?: return buildManagedToolError(
                 command = commandFallback,
                 workingDirectory = workingDirectoryFallback,
@@ -580,6 +589,13 @@ class TermuxBashTool(
                     result = result,
                 )
             }
+        } catch (cancellationException: CancellationException) {
+            TermuxPendingResults.remove(executionId)
+            logTermux(
+                "dispatch cancelled duration_ms=${System.currentTimeMillis() - startedAt} " +
+                    "command=${summarizeCommand(command)}",
+            )
+            throw cancellationException
         } catch (throwable: Throwable) {
             TermuxPendingResults.remove(executionId)
             logTermux(
@@ -620,14 +636,16 @@ class TermuxBashTool(
         val normalizedWorkingDirectory = normalizeTermuxPath(workingDirectory)
         if (!shouldPrepareTermuxWorkingDirectory(normalizedWorkingDirectory)) return null
 
-        val raw = runCatching {
+        val raw = try {
             JSONObject(
                 dispatchCommand(
                     command = buildEnsureDirectoryScript(normalizedWorkingDirectory),
                     workingDirectory = TermuxContract.HomeDirectory,
                 )
             )
-        }.getOrElse {
+        } catch (cancellationException: CancellationException) {
+            throw cancellationException
+        } catch (_: Throwable) {
             JSONObject().apply {
                 put("ok", false)
                 put("errmsg", "Termux returned unreadable output while preparing the workspace directory.")
