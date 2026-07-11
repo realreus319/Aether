@@ -81,6 +81,7 @@ class PiKernelBridge(
         )
 
     suspend fun loginProvider(
+        providerConfigId: String,
         providerId: String,
         authMethod: String,
         oauthFlow: String = "",
@@ -89,12 +90,20 @@ class PiKernelBridge(
         request(
             type = "login_provider",
             payload = JSONObject()
+                .put("provider_config_id", providerConfigId)
                 .put("provider_id", providerId)
                 .put("auth_method", authMethod)
                 .put("oauth_flow", oauthFlow),
             timeoutMillis = PiBridgeOAuthTimeoutMillis,
             onEvent = onEvent,
             abortOnCancellation = true,
+        )
+
+    suspend fun clearProviderCredential(providerConfigId: String): JSONObject =
+        request(
+            type = "clear_provider_credential",
+            payload = JSONObject().put("provider_config_id", providerConfigId),
+            timeoutMillis = PiBridgePingTimeoutMillis,
         )
 
     suspend fun submitAuthPrompt(
@@ -158,14 +167,6 @@ class PiKernelBridge(
                 .put("message", message),
             timeoutMillis = PiBridgeRequestTimeoutMillis,
             onEvent = onEvent,
-        )
-
-    suspend fun abortSession(sessionId: String): JSONObject =
-        request(
-            type = "abort",
-            payload = JSONObject().put("session_id", sessionId),
-            timeoutMillis = PiBridgePingTimeoutMillis,
-            abortOnCancellation = false,
         )
 
     suspend fun closeSession(sessionId: String): JSONObject =

@@ -17,6 +17,7 @@ class PiProviderMapperTest {
     @Test
     fun builtInOpenAiMapsDirectlyToPiCatalog() {
         val config = AppSettings(
+            providerConfigId = "openai-config",
             piProviderId = "openai",
             apiKey = "sk-test",
             baseUrl = "https://api.openai.com/v1",
@@ -24,6 +25,8 @@ class PiProviderMapperTest {
         ).toPiModelConfig()
 
         assertEquals("builtin", config.providerType)
+        assertEquals("openai-config", config.providerConfigId)
+        assertEquals("openai-config", config.toJson().getString("provider_config_id"))
         assertEquals("openai", config.piProviderId)
         assertEquals("builtin", config.piApi)
         assertEquals("gpt-5.4", config.modelId)

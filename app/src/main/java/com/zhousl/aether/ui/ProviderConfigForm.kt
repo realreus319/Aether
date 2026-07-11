@@ -422,7 +422,7 @@ fun ProviderConfigurationForm(
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
     onModelEnabledChange: (LlmProviderConfig) -> Unit = {},
     authState: PiProviderAuthState = PiProviderAuthState(),
-    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit = { _, _, _ -> },
+    onStartProviderLogin: (String, String, ProviderAuthMethod, String) -> Unit = { _, _, _, _ -> },
     onSubmitAuthPrompt: (String, String, Boolean) -> Unit = { _, _, _ -> },
     onClearAuthState: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -513,7 +513,7 @@ fun ProviderConfigurationForm(
                 oauthState = relevantAuthState,
                 onStartOAuthLogin = { flow ->
                     onClearAuthState()
-                    onStartProviderLogin(selectedDefinition.id, ProviderAuthMethod.OAuth, flow)
+                    onStartProviderLogin(state.buildConfig().id, selectedDefinition.id, ProviderAuthMethod.OAuth, flow)
                 },
                 onDisconnect = {
                     state.oauthCredentialJson = ""
@@ -656,7 +656,7 @@ internal fun applyProviderAuthResult(
 fun ProviderAuthenticationSetup(
     state: ProviderFormState,
     authState: PiProviderAuthState,
-    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onStartProviderLogin: (String, String, ProviderAuthMethod, String) -> Unit,
     onSubmitAuthPrompt: (String, String, Boolean) -> Unit,
     onClearAuthState: () -> Unit,
     cardColor: Color = AetherSurfaceHigh,
@@ -701,7 +701,7 @@ fun ProviderAuthenticationSetup(
                         authState = relevantAuthState,
                         onStartLogin = {
                             onClearAuthState()
-                            onStartProviderLogin(definition.id, ProviderAuthMethod.ApiKey, "")
+                            onStartProviderLogin(state.buildConfig().id, definition.id, ProviderAuthMethod.ApiKey, "")
                         },
                         onDisconnect = {
                             state.apiKey = ""
@@ -731,7 +731,7 @@ fun ProviderAuthenticationSetup(
                 oauthState = relevantAuthState,
                 onStartOAuthLogin = { flow ->
                     onClearAuthState()
-                    onStartProviderLogin(definition.id, ProviderAuthMethod.OAuth, flow)
+                    onStartProviderLogin(state.buildConfig().id, definition.id, ProviderAuthMethod.OAuth, flow)
                 },
                 onDisconnect = {
                     state.oauthCredentialJson = ""
@@ -916,7 +916,7 @@ fun AddProviderWizard(
     isFetchingModels: Boolean,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
     authState: PiProviderAuthState,
-    onStartProviderLogin: (String, ProviderAuthMethod, String) -> Unit,
+    onStartProviderLogin: (String, String, ProviderAuthMethod, String) -> Unit,
     onSubmitAuthPrompt: (String, String, Boolean) -> Unit,
     onClearAuthState: () -> Unit,
     onSave: (LlmProviderConfig) -> Unit,

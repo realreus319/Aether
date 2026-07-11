@@ -63,6 +63,7 @@ interface BridgeRequest {
 
 interface ModelConfig {
   provider_type: string;
+  provider_config_id: string;
   pi_provider_id: string;
   pi_api: string;
   model_id: string;
@@ -127,6 +128,15 @@ const pendingAuthPrompts = new Map<
   }
 >();
 const harnessSessions = new Map<string, HarnessSessionState>();
+
+interface SharedCredentialState {
+  credential?: Credential;
+  queue: Promise<void>;
+}
+
+const sharedCredentialStates = new Map<string, SharedCredentialState>();
+let oauthTransportQueue: Promise<void> = Promise.resolve();
+
 const builtinProviderById = new Map(
   builtinProviders().map((provider) => {
     const oauth = bundledOAuthAuth(provider.id);
@@ -243,17 +253,26 @@ function githubEnterpriseDomain(credential: OAuthCredential): string | undefined
 }
 
 class BridgeCredentialStore implements CredentialStore {
-  private credential?: Credential;
+  private readonly state: SharedCredentialState;
 
   constructor(
     readonly providerId: string,
+    providerConfigId: string,
     initialCredential?: Credential,
   ) {
-    this.credential = initialCredential;
+    const existing = sharedCredentialStates.get(providerConfigId);
+    if (existing) {
+      this.state = existing;
+    } else {
+      this.state = { credential: initialCredential, queue: Promise.resolve() };
+      sharedCredentialStates.set(providerConfigId, this.state);
+    }
   }
 
   async read(providerId: string): Promise<Credential | undefined> {
-    return providerId === this.providerId ? this.credential : undefined;
+    if (providerId !== this.providerId) return undefined;
+    await this.state.queue;
+    return this.state.credential;
   }
 
   async modify(
@@ -261,14 +280,55 @@ class BridgeCredentialStore implements CredentialStore {
     fn: (current: Credential | undefined) => Promise<Credential | undefined>,
   ): Promise<Credential | undefined> {
     if (providerId !== this.providerId) return undefined;
-    const next = await fn(this.credential);
-    if (next !== undefined) this.credential = next;
-    return next ?? this.credential;
+    let result: Credential | undefined;
+    const operation = this.state.queue.then(async () => {
+      const next = await fn(this.state.credential);
+      if (next !== undefined) this.state.credential = next;
+      result = this.state.credential;
+    });
+    this.state.queue = operation.catch(() => undefined);
+    await operation;
+    return result;
   }
 
   async delete(providerId: string): Promise<void> {
-    if (providerId === this.providerId) this.credential = undefined;
+    if (providerId !== this.providerId) return;
+    const operation = this.state.queue.then(() => {
+      this.state.credential = undefined;
+    });
+    this.state.queue = operation.catch(() => undefined);
+    await operation;
   }
+}
+
+async function replaceSharedCredential(
+  providerConfigId: string,
+  credential: Credential,
+): Promise<void> {
+  const existing = sharedCredentialStates.get(providerConfigId);
+  if (!existing) {
+    sharedCredentialStates.set(providerConfigId, {
+      credential,
+      queue: Promise.resolve(),
+    });
+    return;
+  }
+  const operation = existing.queue.then(() => {
+    existing.credential = credential;
+  });
+  existing.queue = operation.catch(() => undefined);
+  await operation;
+}
+
+async function clearSharedCredential(providerConfigId: string): Promise<boolean> {
+  const existing = sharedCredentialStates.get(providerConfigId);
+  if (!existing) return false;
+  const operation = existing.queue.then(() => {
+    existing.credential = undefined;
+  });
+  existing.queue = operation.catch(() => undefined);
+  await operation;
+  return true;
 }
 
 function writeFrame(frame: JsonObject): void {
@@ -321,6 +381,13 @@ async function withAetherOAuthTransport<T>(
 ): Promise<T> {
   if (providerId !== "openai-codex") return login();
 
+  const previousOperation = oauthTransportQueue;
+  let releaseTransport: () => void = () => undefined;
+  oauthTransportQueue = new Promise<void>((resolve) => {
+    releaseTransport = resolve;
+  });
+  await previousOperation;
+
   const previousCallbackHost = process.env.PI_OAUTH_CALLBACK_HOST;
   const originalFetch = globalThis.fetch;
   process.env.PI_OAUTH_CALLBACK_HOST = AETHER_MANUAL_OAUTH_CALLBACK_HOST;
@@ -359,6 +426,7 @@ async function withAetherOAuthTransport<T>(
     } else {
       process.env.PI_OAUTH_CALLBACK_HOST = previousCallbackHost;
     }
+    releaseTransport();
   }
 }
 
@@ -391,11 +459,13 @@ function normalizeHeaders(value: unknown): Record<string, string> {
 function normalizeModelConfig(rawValue: unknown): ModelConfig {
   const raw = asObject(rawValue);
   const providerType = asString(raw.provider_type).trim();
+  const providerConfigId = asString(raw.provider_config_id).trim();
   const piProviderId = asString(raw.pi_provider_id).trim();
   const piApi = asString(raw.pi_api).trim();
   const modelId = asString(raw.model_id).trim();
   const baseUrl = asString(raw.base_url).trim();
   if (!providerType) throw new Error("model_config.provider_type is required.");
+  if (!providerConfigId) throw new Error("model_config.provider_config_id is required.");
   if (!piProviderId) throw new Error("model_config.pi_provider_id is required.");
   if (!piApi) throw new Error("model_config.pi_api is required.");
   if (!modelId) throw new Error("model_config.model_id is required.");
@@ -405,6 +475,7 @@ function normalizeModelConfig(rawValue: unknown): ModelConfig {
   const authMethod = asString(raw.auth_method).trim();
   return {
     provider_type: providerType,
+    provider_config_id: providerConfigId,
     pi_provider_id: piProviderId,
     pi_api: piApi,
     model_id: modelId,
@@ -562,6 +633,7 @@ function buildModels(config: ModelConfig): {
     }
     const credentialStore = new BridgeCredentialStore(
       provider.id,
+      config.provider_config_id,
       credentialForConfig(config),
     );
     const models = createModels({
@@ -1516,6 +1588,8 @@ function resolveAuthPrompt(payload: JsonObject): boolean {
 }
 
 async function loginProvider(id: string, payload: JsonObject): Promise<JsonObject> {
+  const providerConfigId = asString(payload.provider_config_id).trim();
+  if (!providerConfigId) throw new Error("provider_config_id is required for provider login.");
   const providerId = asString(payload.provider_id).trim();
   const provider = builtinProviderById.get(providerId);
   if (!provider) throw new Error(`Unknown built-in Pi provider: ${providerId}`);
@@ -1575,6 +1649,7 @@ async function loginProvider(id: string, payload: JsonObject): Promise<JsonObjec
     const oauth = provider.auth.oauth;
     if (!oauth) throw new Error(`Pi provider ${providerId} does not support OAuth.`);
     const credential = await oauth.login(callbacks);
+    await replaceSharedCredential(providerConfigId, credential);
     return {
       provider_id: providerId,
       auth_method: "oauth",
@@ -1591,14 +1666,10 @@ async function loginProvider(id: string, payload: JsonObject): Promise<JsonObjec
   }
 }
 
-async function startHarnessSession(payload: JsonObject): Promise<JsonObject> {
-  const messages = normalizeMessages(payload.messages) as AgentMessage[];
-  const { state, reused } = await prepareHarnessSession(payload, messages);
-  return {
-    accepted: true,
-    session_id: state.sessionId,
-    session_reused: reused,
-  };
+async function clearProviderCredential(payload: JsonObject): Promise<JsonObject> {
+  const providerConfigId = asString(payload.provider_config_id).trim();
+  if (!providerConfigId) throw new Error("provider_config_id is required to clear provider credentials.");
+  return { cleared: await clearSharedCredential(providerConfigId) };
 }
 
 async function closeHarnessSessionRequest(payload: JsonObject): Promise<JsonObject> {
@@ -1657,6 +1728,9 @@ async function handleRequest(request: BridgeRequest): Promise<void> {
     case "login_provider":
       writeResponse(id, await loginProvider(id, payload));
       return;
+    case "clear_provider_credential":
+      writeResponse(id, await clearProviderCredential(payload));
+      return;
     case "auth_prompt_result":
       writeResponse(id, { accepted: resolveAuthPrompt(payload) });
       return;
@@ -1669,9 +1743,6 @@ async function handleRequest(request: BridgeRequest): Promise<void> {
       return;
     case "run_turn":
       writeResponse(id, await runHarnessTurn(id, payload));
-      return;
-    case "start_session":
-      writeResponse(id, await startHarnessSession(payload));
       return;
     case "close_session":
       writeResponse(id, await closeHarnessSessionRequest(payload));

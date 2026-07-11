@@ -15,6 +15,7 @@ private const val DefaultMaxRetryDelayMillis = 60_000
 
 data class PiModelConfig(
     val providerType: String,
+    val providerConfigId: String,
     val piProviderId: String,
     val piApi: String,
     val modelId: String,
@@ -34,6 +35,7 @@ data class PiModelConfig(
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("provider_type", providerType)
+        put("provider_config_id", providerConfigId)
         put("pi_provider_id", piProviderId)
         put("pi_api", piApi)
         put("model_id", modelId)
@@ -88,6 +90,9 @@ fun AppSettings.toPiModelConfig(): PiModelConfig {
     }
     return PiModelConfig(
         providerType = if (definition.isBuiltIn) "builtin" else "custom",
+        providerConfigId = providerConfigId.ifBlank {
+            if (definition.isBuiltIn) definition.id else "aether-${stableProviderSuffix(baseUrl)}"
+        },
         piProviderId = if (definition.isBuiltIn) {
             definition.id
         } else {
@@ -126,6 +131,7 @@ fun fauxPiModelConfig(
 ): PiModelConfig =
     PiModelConfig(
         providerType = "faux",
+        providerConfigId = "faux",
         piProviderId = "faux",
         piApi = "faux",
         modelId = modelId,

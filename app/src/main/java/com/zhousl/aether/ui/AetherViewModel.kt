@@ -1844,7 +1844,14 @@ class AetherViewModel(
 
     fun upsertProviderConfig(config: LlmProviderConfig) {
         viewModelScope.launch {
-            settingsRepository.upsertProviderConfig(normalizeProviderConfig(config))
+            val normalizedConfig = normalizeProviderConfig(config)
+            settingsRepository.upsertProviderConfig(normalizedConfig)
+            if (
+                normalizedConfig.authMethod != ProviderAuthMethod.OAuth ||
+                normalizedConfig.oauthCredentialJson.isBlank()
+            ) {
+                runCatching { runtime.piKernelBridge.clearProviderCredential(normalizedConfig.id) }
+            }
             captureAnalyticsEvent(
                 event = "provider added",
                 properties = mapOf(
@@ -1859,6 +1866,7 @@ class AetherViewModel(
     fun removeProviderConfig(id: String) {
         viewModelScope.launch {
             settingsRepository.removeProviderConfig(id)
+            runCatching { runtime.piKernelBridge.clearProviderCredential(id) }
             captureAnalyticsEvent(event = "provider removed")
         }
     }
@@ -1927,6 +1935,7 @@ class AetherViewModel(
     }
 
     fun startProviderLogin(
+        providerConfigId: String,
         providerId: String,
         authMethod: ProviderAuthMethod,
         oauthFlow: String = "",
@@ -1952,6 +1961,7 @@ class AetherViewModel(
         providerAuthJob = viewModelScope.launch {
             runCatching {
                 runtime.piKernelBridge.loginProvider(
+                    providerConfigId = providerConfigId,
                     providerId = normalizedProviderId,
                     authMethod = authMethod.storageValue,
                     oauthFlow = oauthFlow,

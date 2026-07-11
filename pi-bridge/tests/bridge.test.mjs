@@ -121,6 +121,7 @@ afterEach(async () => {
 function fauxConfig(overrides = {}) {
   return {
     provider_type: "faux",
+    provider_config_id: "faux",
     pi_provider_id: "faux",
     pi_api: "faux",
     model_id: "faux-1",
@@ -614,6 +615,7 @@ test("maps a custom OpenAI-compatible provider through Pi", async (t) => {
     {
       model_config: {
         provider_type: "openai_compatible",
+        provider_config_id: "custom-completion",
         pi_provider_id: "aether-test",
         pi_api: "openai-completions",
         model_id: "custom-model",
@@ -663,12 +665,14 @@ test("validates Pi OAuth protocol requests without legacy provider fallbacks", a
   await assert.rejects(
     client.request("oauth-unsupported", "login_provider", {
       provider_id: "openai",
+      provider_config_id: `test-${"openai"}`,
     }),
     /does not support OAuth/,
   );
   await assert.rejects(
     client.request("oauth-unknown", "login_provider", {
       provider_id: "legacy-custom-provider",
+      provider_config_id: "test-unknown",
     }),
     /Unknown built-in Pi provider/,
   );
@@ -687,7 +691,10 @@ test("bundles every Pi OAuth flow into the standalone bridge", async () => {
     const login = client.request(
       requestId,
       "login_provider",
-      { provider_id: providerId },
+      {
+        provider_id: providerId,
+        provider_config_id: `test-${providerId}`,
+      },
       15_000,
     );
     const prompt = await client.waitForEvent(
@@ -710,7 +717,11 @@ test("keeps Codex browser OAuth on the manual redirect flow", async () => {
   const login = client.request(
     "oauth-codex-manual",
     "login_provider",
-    { provider_id: "openai-codex", oauth_flow: "browser" },
+    {
+      provider_id: "openai-codex",
+      provider_config_id: "test-openai-codex",
+      oauth_flow: "browser",
+    },
     15_000,
   );
 
@@ -746,6 +757,7 @@ test("uses Pi provider-specific API key login prompts", async () => {
 
   const openAILogin = client.request("api-key-openai", "login_provider", {
     provider_id: "openai",
+    provider_config_id: `test-${"openai"}`,
     auth_method: "api_key",
   });
   const openAIPrompt = await client.waitForEvent(
@@ -764,6 +776,7 @@ test("uses Pi provider-specific API key login prompts", async () => {
 
   const cloudflareLogin = client.request("api-key-cloudflare", "login_provider", {
     provider_id: "cloudflare-ai-gateway",
+    provider_config_id: `test-${"cloudflare-ai-gateway"}`,
     auth_method: "api_key",
   });
   const cloudflareAnswers = [
@@ -793,6 +806,7 @@ test("uses Pi provider-specific API key login prompts", async () => {
   await assert.rejects(
     client.request("api-key-bedrock", "login_provider", {
       provider_id: "amazon-bedrock",
+      provider_config_id: `test-${"amazon-bedrock"}`,
       auth_method: "api_key",
     }),
     /ambient credentials/,
@@ -806,6 +820,7 @@ test("rejects non-OpenAI custom Pi APIs", async () => {
       client.request(`custom-${piApi}`, "complete_once", {
         model_config: {
           provider_type: "custom",
+          provider_config_id: `custom-${piApi}`,
           pi_provider_id: "custom-test",
           pi_api: piApi,
           model_id: "custom-model",
