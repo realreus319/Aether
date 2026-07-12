@@ -3,13 +3,12 @@ package com.zhousl.aether.data
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProviderConfigSerializationTest {
     @Test
-    fun shareableProviderExportOmitsCredentials() {
+    fun fullProviderSerializationPreservesCredentials() {
         val config = LlmProviderConfig(
             providerId = "openai",
             name = "OpenAI",
@@ -23,15 +22,19 @@ class ProviderConfigSerializationTest {
             modelId = "gpt-5.4",
         )
 
-        val exported = config.toExportJson()
-        assertFalse(exported.has("apiKey"))
-        assertFalse(exported.has("oauthCredentialJson"))
-        assertFalse(exported.has("providerEnvironmentVariables"))
-
-        val persisted = config.toJson()
-        assertEquals("secret-key", persisted.getString("apiKey"))
-        assertTrue(persisted.has("oauthCredentialJson"))
-        assertTrue(persisted.has("providerEnvironmentVariables"))
+        val serialized = config.toJson()
+        assertEquals("secret-key", serialized.getString("apiKey"))
+        assertEquals(
+            "{\"refresh_token\":\"secret\"}",
+            serialized.getString("oauthCredentialJson"),
+        )
+        assertEquals(
+            "secret-token",
+            serialized
+                .getJSONArray("providerEnvironmentVariables")
+                .getJSONObject(0)
+                .getString("value"),
+        )
     }
 
     @Test

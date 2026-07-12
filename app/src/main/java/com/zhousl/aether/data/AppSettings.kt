@@ -314,12 +314,6 @@ internal fun LlmProviderConfig.toJson(): JSONObject = JSONObject().apply {
     put("updatedAtMillis", updatedAtMillis)
 }
 
-internal fun LlmProviderConfig.toExportJson(): JSONObject = toJson().apply {
-    remove("apiKey")
-    remove("oauthCredentialJson")
-    remove("providerEnvironmentVariables")
-}
-
 internal fun parseProviderConfigs(rawValue: String): List<LlmProviderConfig> {
     if (rawValue.isBlank()) return emptyList()
     return runCatching {

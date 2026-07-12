@@ -56,7 +56,7 @@ import com.zhousl.aether.data.parseMcpServerConfigs
 import com.zhousl.aether.data.parseProviderConfigs
 import com.zhousl.aether.data.serializeChatSessions
 import com.zhousl.aether.data.serializeMcpServerConfigs
-import com.zhousl.aether.data.toExportJson
+import com.zhousl.aether.data.serializeProviderConfigs
 import com.zhousl.aether.data.toJson
 import com.zhousl.aether.data.toJsonArray
 import com.zhousl.aether.data.LlmMessage
@@ -1920,6 +1920,54 @@ class AetherViewModel(
                     session.copy(selectedModelKey = modelKey)
                 }
             }
+        }
+    }
+
+    fun setCurrentChatModelSelectionAndResolveThinkingLevels(
+        modelKey: String,
+        onResolved: (Boolean) -> Unit,
+    ) {
+        setCurrentChatModelSelection(modelKey)
+        val current = _uiState.value
+        val option = current.providerConfigs.availableModelOptions()
+            .firstOrNull { it.key == modelKey }
+            ?: return onResolved(false)
+        val cacheKey = "${option.piProviderId.trim()}/${option.modelId.trim()}"
+        current.thinkingLevelsByProviderModel[cacheKey]?.let { levels ->
+            onResolved(levels.isNotEmpty())
+            return
+        }
+        val config = current.providerConfigs.firstOrNull { it.id == option.providerConfigId }
+            ?: return onResolved(false)
+        val definition = com.zhousl.aether.data.PiProviderCatalog.resolve(config.piProviderId)
+        if (!definition.isBuiltIn) {
+            onResolved(false)
+            return
+        }
+
+        viewModelScope.launch {
+            val result = ProviderModelCatalogClient.fetchPiThinkingLevels(
+                config = config,
+                piKernelBridge = runtime.piKernelBridge,
+                startPiBridgeIfNeeded = false,
+            )
+            if (result.error != null) {
+                onResolved(false)
+                return@launch
+            }
+            _uiState.update { state ->
+                state.copy(
+                    thinkingLevelsByProviderModel = state.thinkingLevelsByProviderModel +
+                        result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                    thinkingLevelClampsByProviderModel = state.thinkingLevelClampsByProviderModel +
+                        result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                )
+            }
+            onResolved(result.thinkingLevelsByModel[option.modelId].orEmpty().isNotEmpty())
         }
     }
 
@@ -4578,7 +4626,7 @@ class AetherViewModel(
             put("exportType", "app")
             put("exportedAtMillis", System.currentTimeMillis())
             put("settings", snapshot.settings.toJson())
-            put("providerConfigs", JSONArray().apply { snapshot.providerConfigs.forEach { put(it.toExportJson()) } })
+            put("providerConfigs", JSONArray(serializeProviderConfigs(snapshot.providerConfigs)))
             put("sessions", JSONArray(serializeChatSessions(sessions.map { it.copy(activeSkills = emptyList()) })))
             put("currentSessionId", snapshot.currentSessionId)
             put("skillBundles", skillManager.exportSkillBundles(snapshot.installedSkills))
@@ -4624,6 +4672,20 @@ class AetherViewModel(
         put("piProviderId", piProviderId)
         put("providerConfigId", providerConfigId)
         put("providerAuthMethod", providerAuthMethod.storageValue)
+        put("apiKey", apiKey)
+        put("oauthCredentialJson", oauthCredentialJson)
+        put(
+            "providerEnvironmentVariables",
+            JSONArray().apply {
+                providerEnvironmentVariables.forEach { variable ->
+                    put(
+                        JSONObject()
+                            .put("name", variable.name)
+                            .put("value", variable.value)
+                    )
+                }
+            },
+        )
         put("baseUrl", baseUrl)
         put("modelId", modelId)
         put("customHeaders", customHeaders.toJsonArray())
