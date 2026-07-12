@@ -50,6 +50,15 @@ class OnboardingLogicTest {
                 modelId = "gpt-5.4",
             ).isProviderSetupValid()
         )
+        assertFalse(
+            AppSettings(
+                piProviderId = "openai-codex",
+                providerAuthMethod = ProviderAuthMethod.ApiKey,
+                apiKey = "",
+                baseUrl = "",
+                modelId = "gpt-5.3-codex-spark",
+            ).isProviderSetupValid()
+        )
         assertTrue(
             AppSettings(
                 piProviderId = "google-vertex",

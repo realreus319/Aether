@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
 import { stdin as input, stdout as output, stderr } from "node:process";
 import {
+  getSupportedThinkingLevels,
+  clampThinkingLevel,
   createModels,
   createProvider,
   defaultProviderAuthContext,
@@ -46,8 +48,8 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import type { TSchema } from "typebox";
 
 const BRIDGE_VERSION = "2.0.0-alpha.0";
-const PI_AI_VERSION = "0.80.3";
-const PI_AGENT_CORE_VERSION = "0.80.3";
+const PI_AI_VERSION = "0.80.6";
+const PI_AGENT_CORE_VERSION = "0.80.6";
 const AETHER_MANUAL_OAUTH_CALLBACK_HOST = "203.0.113.1";
 const OAUTH_FETCH_MAX_ATTEMPTS = 3;
 const DEFAULT_HARNESS_SESSION_LIMIT = 8;
@@ -711,6 +713,13 @@ function providerCatalogPayload(): JsonObject {
           name: model.name,
           api: model.api,
           reasoning: model.reasoning,
+          thinking_levels: getSupportedThinkingLevels(model),
+          thinking_level_clamps: Object.fromEntries(
+            ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => [
+              level,
+              clampThinkingLevel(model, level as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"),
+            ]),
+          ),
           input: model.input,
           context_window: model.contextWindow,
           max_tokens: model.maxTokens,
@@ -908,7 +917,12 @@ function emitStreamEvent(requestId: string, event: AssistantMessageEvent): void 
   }
 }
 
-function streamOptionsFor(payload: JsonObject, signal: AbortSignal, config: ModelConfig): SimpleStreamOptions {
+function streamOptionsFor(
+  payload: JsonObject,
+  signal: AbortSignal,
+  config: ModelConfig,
+  model: Model<string>,
+): SimpleStreamOptions {
   const options: SimpleStreamOptions = {
     signal,
     sessionId: asString(payload.session_id),
@@ -921,7 +935,8 @@ function streamOptionsFor(payload: JsonObject, signal: AbortSignal, config: Mode
   if (typeof temperature === "number") options.temperature = temperature;
   const maxTokens = payload.max_tokens;
   if (typeof maxTokens === "number") options.maxTokens = maxTokens;
-  const reasoning = asString(payload.reasoning);
+  const thinkingLevel = thinkingLevelFor(payload);
+  const reasoning = thinkingLevel ? clampThinkingLevel(model, thinkingLevel) : undefined;
   if (reasoning && reasoning !== "off") {
     options.reasoning = reasoning as SimpleStreamOptions["reasoning"];
   }
@@ -1175,11 +1190,11 @@ function promptFromLastUserMessage(messages: Message[]): {
   return { history: messages.slice(0, -1) as AgentMessage[], text, images };
 }
 
-function thinkingLevelFor(payload: JsonObject): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+function thinkingLevelFor(payload: JsonObject): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined {
   const reasoning = asString(payload.reasoning).trim();
   if (!reasoning) return undefined;
-  if (["off", "minimal", "low", "medium", "high", "xhigh"].includes(reasoning)) {
-    return reasoning as "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoning)) {
+    return reasoning as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   }
   return undefined;
 }
@@ -1510,7 +1525,7 @@ async function runSimpleCompletion(id: string, payload: JsonObject, stream: bool
   activeAborters.set(id, () => controller.abort());
   try {
     const context = buildContext(payload);
-    const options = streamOptionsFor(payload, controller.signal, config);
+    const options = streamOptionsFor(payload, controller.signal, config, model);
     if (stream) {
       const eventStream = models.streamSimple(model, context, options);
       for await (const event of eventStream) {

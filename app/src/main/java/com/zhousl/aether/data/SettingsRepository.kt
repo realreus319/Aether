@@ -37,6 +37,7 @@ class SettingsRepository(
             ),
             baseUrl = storedBaseUrl,
             modelId = preferences[MODEL_ID] ?: defaults.modelId,
+            reasoningEffort = normalizeReasoningEffort(preferences[REASONING_EFFORT]),
             systemPrompt = preferences[SYSTEM_PROMPT] ?: defaults.systemPrompt,
             tavilyApiKey = preferences[TAVILY_API_KEY].orEmpty(),
             tavilyBaseUrl = normalizeTavilyBaseUrl(preferences[TAVILY_BASE_URL] ?: defaults.tavilyBaseUrl),
@@ -317,6 +318,7 @@ class SettingsRepository(
             )
             it[BASE_URL] = settings.baseUrl
             it[MODEL_ID] = settings.modelId
+            it[REASONING_EFFORT] = normalizeReasoningEffort(settings.reasoningEffort)
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
             it[TAVILY_BASE_URL] = normalizeTavilyBaseUrl(settings.tavilyBaseUrl)
@@ -407,6 +409,7 @@ class SettingsRepository(
             )
             it[BASE_URL] = settings.baseUrl
             it[MODEL_ID] = settings.modelId
+            it[REASONING_EFFORT] = normalizeReasoningEffort(settings.reasoningEffort)
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
             it[TAVILY_BASE_URL] = normalizeTavilyBaseUrl(settings.tavilyBaseUrl)
@@ -489,6 +492,7 @@ class SettingsRepository(
         val PROVIDER_ENVIRONMENT_VARIABLES = stringPreferencesKey("provider_environment_variables")
         val BASE_URL = stringPreferencesKey("base_url")
         val MODEL_ID = stringPreferencesKey("model_id")
+        val REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val TAVILY_API_KEY = stringPreferencesKey("tavily_api_key")
         val TAVILY_BASE_URL = stringPreferencesKey("tavily_base_url")

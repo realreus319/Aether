@@ -141,6 +141,16 @@
     <string name="chat_attachment_count_one">1 attachment</string>
     <string name="chat_attachment_count_other">%1$d attachments</string>
     <string name="chat_select_model">Select model</string>
+    <string name="chat_model">Model</string>
+    <string name="chat_reasoning_effort">Reasoning effort</string>
+    <string name="chat_reasoning_effort_choose">Choose reasoning effort</string>
+    <string name="chat_reasoning_effort_off">Off</string>
+    <string name="chat_reasoning_effort_minimal">Minimal</string>
+    <string name="chat_reasoning_effort_low">Low</string>
+    <string name="chat_reasoning_effort_medium">Medium</string>
+    <string name="chat_reasoning_effort_high">High</string>
+    <string name="chat_reasoning_effort_xhigh">XHigh</string>
+    <string name="chat_reasoning_effort_max">Max</string>
     <string name="chat_first_prompt_ready_title">Your first prompt is ready</string>
     <string name="chat_first_prompt_ready_subtitle">Tap send to test Aether.</string>
     <string name="chat_editing_earlier_message_title">Editing earlier message</string>
@@ -319,6 +329,8 @@
     <string name="settings_app_data_description">Import or export the complete local Aether data set as JSON.</string>
     <string name="settings_import_app_data">Import app data</string>
     <string name="settings_export_app_data">Export app data</string>
+    <string name="settings_export_app_data_warning_title">Export sensitive app data?</string>
+    <string name="settings_export_app_data_warning_message">This complete backup includes provider credentials, custom headers, environment variables, MCP configuration, and other private settings. Store it securely and do not share it.</string>
     <string name="settings_logs">Logs</string>
     <string name="settings_logs_description">Export recent Aether logcat output and diagnostic metadata.</string>
     <string name="settings_export_logs">Export logs</string>

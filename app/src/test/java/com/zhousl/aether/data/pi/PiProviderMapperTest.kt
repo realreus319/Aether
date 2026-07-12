@@ -31,10 +31,56 @@ class PiProviderMapperTest {
         assertEquals("builtin", config.piApi)
         assertEquals("gpt-5.4", config.modelId)
         assertEquals("sk-test", config.apiKey)
-        assertTrue(config.reasoning)
-        assertEquals("medium", AppSettings(
+        assertFalse(config.reasoning)
+        assertEquals("high", AppSettings(
             piProviderId = "openai",
             modelId = "gpt-5.4",
+            reasoningEffort = "high",
+        ).toPiThinkingLevel())
+    }
+
+    @Test
+    fun maxReasoningEffortPassesThroughToPi() {
+        assertEquals("max", AppSettings(
+            piProviderId = "openai",
+            modelId = "gpt-5.6-luna",
+            reasoningEffort = "max",
+        ).toPiThinkingLevel())
+    }
+
+    @Test
+    fun unknownBuiltInModelStillPassesSelectedLevelToPi() {
+        assertEquals("high", AppSettings(
+            piProviderId = "openai",
+            modelId = "future-reasoning-model",
+            reasoningEffort = "high",
+        ).toPiThinkingLevel())
+    }
+
+    @Test
+    fun customModelDoesNotInventReasoningCapability() {
+        val config = AppSettings(
+            piProviderId = "openai-compatible",
+            providerConfigId = "custom-provider-id",
+            baseUrl = "https://example.test/v1",
+            modelId = "custom-model",
+            reasoningEffort = "high",
+        ).toPiModelConfig()
+
+        assertFalse(config.reasoning)
+        assertEquals("high", AppSettings(
+            piProviderId = "openai-compatible",
+            modelId = "custom-model",
+            reasoningEffort = "high",
+        ).toPiThinkingLevel())
+    }
+
+    @Test
+    fun legacyNoneReasoningEffortMigratesToPiOff() {
+        assertEquals("off", AppSettings(
+            piProviderId = "openai",
+            modelId = "gpt-5.4",
+            reasoningEffort = "none",
         ).toPiThinkingLevel())
     }
 

@@ -283,6 +283,7 @@ private fun AetherAppContent(
     var pendingSessionExportId by remember { mutableStateOf<String?>(null) }
     var pendingSkillZipCompletion by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     var pendingTermuxPermissionSource by remember { mutableStateOf("unknown") }
+    var showAppDataExportWarning by remember { mutableStateOf(false) }
     val onPickedDocuments: (List<Uri>) -> Unit = { uris ->
         uris.forEach { uri ->
             runCatching {
@@ -593,6 +594,9 @@ private fun AetherAppContent(
                     modelOptions = conversationModelOptions,
                     modelCatalogInfo = uiState.modelCatalogInfo,
                     selectedModelKey = selectedConversationModelKey,
+                    reasoningEffort = uiState.settings.reasoningEffort,
+                    thinkingLevelsByProviderModel = uiState.thinkingLevelsByProviderModel,
+                    thinkingLevelClampsByProviderModel = uiState.thinkingLevelClampsByProviderModel,
                     availableSkills = uiState.installedSkills.filter { it.isEnabled },
                     availableMcpServers = uiState.mcpServers.filter { it.isEnabled },
                     selectedSkillIds = selectedSkillIds,
@@ -611,7 +615,9 @@ private fun AetherAppContent(
                     showStarterPromptHint = uiState.showStarterPromptHint,
                     showTermuxSetupNotice = false,
                     onInputChanged = viewModel::updateDraftInput,
-                    onModelSelected = viewModel::setCurrentChatModelSelection,
+                    onModelSelected = viewModel::setCurrentChatModelSelectionAndResolveThinkingLevels,
+                    onModelSelectorOpened = viewModel::refreshCurrentChatThinkingLevels,
+                    onReasoningEffortSelected = viewModel::setReasoningEffort,
                     onRemoveDraftAttachment = viewModel::removeDraftAttachment,
                     onSetSkillSelected = viewModel::setComposerSkillSelected,
                     onSetMcpServerSelected = viewModel::setComposerMcpServerSelected,
@@ -764,7 +770,7 @@ private fun AetherAppContent(
                         appDataImportLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
                     },
                     onExportAppData = {
-                        appDataExportLauncher.launch("aether-data.json")
+                        showAppDataExportWarning = true
                     },
                     onExportLogs = {
                         logExportLauncher.launch("aether-logs.txt")
@@ -828,6 +834,35 @@ private fun AetherAppContent(
                 updateState = uiState.appUpdate,
                 onDismiss = viewModel::dismissUpdateAvailableDialog,
                 onDownloadAndInstall = viewModel::downloadAndInstallUpdate,
+            )
+        }
+        if (showAppDataExportWarning) {
+            AlertDialog(
+                onDismissRequest = { showAppDataExportWarning = false },
+                containerColor = AetherSurface,
+                titleContentColor = AetherOnSurface,
+                textContentColor = AetherOnSurfaceVariant,
+                title = {
+                    Text(stringResource(R.string.settings_export_app_data_warning_title))
+                },
+                text = {
+                    Text(stringResource(R.string.settings_export_app_data_warning_message))
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showAppDataExportWarning = false
+                            appDataExportLauncher.launch("aether-data.json")
+                        },
+                    ) {
+                        Text(stringResource(R.string.common_export))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAppDataExportWarning = false }) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                },
             )
         }
     }

@@ -138,6 +138,9 @@
     <string name="chat_attachment_count_one">1 个附件</string>
     <string name="chat_attachment_count_other">%1$d 个附件</string>
     <string name="chat_select_model">选择模型</string>
+    <string name="chat_model">模型</string>
+    <string name="chat_reasoning_effort">推理强度</string>
+    <string name="chat_reasoning_effort_choose">选择推理强度</string>
     <string name="chat_first_prompt_ready_title">你的第一条提示已准备好</string>
     <string name="chat_first_prompt_ready_subtitle">点击发送来测试 Aether。</string>
     <string name="chat_editing_earlier_message_title">正在编辑较早的消息</string>
@@ -312,6 +315,8 @@
     <string name="settings_app_data_description">以 JSON 导入或导出完整的本地 Aether 数据集。</string>
     <string name="settings_import_app_data">导入应用数据</string>
     <string name="settings_export_app_data">导出应用数据</string>
+    <string name="settings_export_app_data_warning_title">导出敏感应用数据？</string>
+    <string name="settings_export_app_data_warning_message">此完整备份包含提供方凭据、自定义请求头、环境变量、MCP 配置及其他隐私设置。请妥善保管，不要分享给他人。</string>
     <string name="settings_logs">日志</string>
     <string name="settings_logs_description">导出近期 Aether logcat 输出和诊断信息。</string>
     <string name="settings_export_logs">导出日志</string>

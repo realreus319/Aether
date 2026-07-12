@@ -3,10 +3,56 @@ package com.zhousl.aether.data
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ProviderModelCatalogClientTest {
+    @Test
+    fun thinkingLevelsUsePiCatalogResults() {
+        assertEquals(emptyList<String>(), supportedThinkingLevels(JSONArray()))
+        assertEquals(
+            listOf("off", "low", "medium", "high", "xhigh", "max"),
+            supportedThinkingLevels(
+                JSONArray()
+                    .put("off")
+                    .put("low")
+                    .put("medium")
+                    .put("high")
+                    .put("xhigh")
+                    .put("max"),
+            ),
+        )
+        assertEquals(
+            listOf("minimal", "high", "xhigh"),
+            supportedThinkingLevels(
+                JSONArray()
+                    .put("minimal")
+                    .put("high")
+                    .put("xhigh")
+                    .put("high")
+                    .put("unknown"),
+            ),
+        )
+    }
+
+    @Test
+    fun thinkingLevelClampsUsePiCatalogResults() {
+        assertEquals(
+            mapOf("off" to "off", "high" to "high", "xhigh" to "max", "max" to "max"),
+            piThinkingLevelClamps(
+                JSONObject()
+                    .put("off", "off")
+                    .put("high", "high")
+                    .put("xhigh", "max")
+                    .put("max", "max")
+                    .put("unknown", "high")
+                    .put("low", "unknown"),
+            ),
+        )
+    }
+
     @Test
     fun fetchModelsIncludesAetherUserAgentAndCustomHeaders() = runBlocking {
         val server = MockWebServer()

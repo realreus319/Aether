@@ -121,6 +121,7 @@ data class AppSettings(
     val baseUrl: String = DefaultCustomProviderBaseUrl,
     val modelId: String = DefaultCustomModelId,
     val customHeaders: List<LlmCustomHeader> = emptyList(),
+    val reasoningEffort: String = DefaultReasoningEffort,
     val systemPrompt: String = "You are Aether, a local-first Android agent that can call tools and complete tasks on-device. Use available tools instead of guessing local state.",
     val tavilyApiKey: String = "",
     val tavilyBaseUrl: String = DefaultTavilyBaseUrl,
@@ -164,6 +165,22 @@ data class TermuxEnvironmentVariable(
 )
 
 const val CurrentOnboardingVersion = 1
+const val DefaultReasoningEffort = "off"
+val SupportedReasoningEfforts: List<String> = listOf(
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+
+fun normalizeReasoningEffort(value: String?): String =
+    value?.trim()?.lowercase(Locale.US)
+        ?.let { value -> if (value == "none") "off" else value }
+        ?.takeIf { it in SupportedReasoningEfforts }
+        ?: DefaultReasoningEffort
 const val DefaultLlmInactivityReconnectTimeoutSeconds = 360
 const val DefaultOldCommandHistoryRetentionHours = 6
 const val MinOldCommandHistoryRetentionHours = 1
@@ -219,9 +236,8 @@ fun AppSettings.isProviderSetupValid(): Boolean {
     if ((definition.requiresBaseUrl || !definition.isBuiltIn) && baseUrl.trim().isEmpty()) return false
     return when (providerAuthMethod) {
         ProviderAuthMethod.ApiKey ->
-            !definition.supportsApiKey ||
-                apiKey.isNotBlank() ||
-                !definition.isBuiltIn
+            !definition.isBuiltIn ||
+                (definition.supportsApiKey && apiKey.isNotBlank())
 
         ProviderAuthMethod.OAuth ->
             definition.supportsOAuth && oauthCredentialJson.isNotBlank()

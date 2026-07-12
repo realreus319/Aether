@@ -13,8 +13,8 @@
     "test:ping": "node dist/bridge.mjs --ping"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.80.3",
-    "@earendil-works/pi-ai": "0.80.3",
+    "@earendil-works/pi-agent-core": "0.80.6",
+    "@earendil-works/pi-ai": "0.80.6",
     "typebox": "1.1.38"
   },
   "devDependencies": {

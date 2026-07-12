@@ -8,6 +8,36 @@ import org.junit.Test
 
 class ProviderConfigSerializationTest {
     @Test
+    fun fullProviderSerializationPreservesCredentials() {
+        val config = LlmProviderConfig(
+            providerId = "openai",
+            name = "OpenAI",
+            piProviderId = "openai",
+            apiKey = "secret-key",
+            oauthCredentialJson = "{\"refresh_token\":\"secret\"}",
+            providerEnvironmentVariables = listOf(
+                PiProviderEnvironmentVariable(name = "TOKEN", value = "secret-token")
+            ),
+            baseUrl = "https://api.openai.com/v1",
+            modelId = "gpt-5.4",
+        )
+
+        val serialized = config.toJson()
+        assertEquals("secret-key", serialized.getString("apiKey"))
+        assertEquals(
+            "{\"refresh_token\":\"secret\"}",
+            serialized.getString("oauthCredentialJson"),
+        )
+        assertEquals(
+            "secret-token",
+            serialized
+                .getJSONArray("providerEnvironmentVariables")
+                .getJSONObject(0)
+                .getString("value"),
+        )
+    }
+
+    @Test
     fun importedProviderConfigBackfillsMissingNameAndBaseUrl() {
         val configs = parseProviderConfigs(
             JSONArray().put(

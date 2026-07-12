@@ -3,20 +3,39 @@ package com.zhousl.aether.data
 import com.zhousl.aether.data.pi.PiKernelBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+
+private val PiThinkingLevels = listOf("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+internal fun supportedThinkingLevels(levels: JSONArray): List<String> =
+    buildList {
+        for (index in 0 until levels.length()) {
+            val level = levels.optString(index).trim()
+            if (level in PiThinkingLevels && level !in this) add(level)
+        }
+    }
+
+internal fun piThinkingLevelClamps(clamps: JSONObject): Map<String, String> =
+    PiThinkingLevels.mapNotNull { level ->
+        clamps.optString(level).takeIf { it in PiThinkingLevels }?.let { level to it }
+    }.toMap()
 
 object ProviderModelCatalogClient {
 
     data class FetchModelsResult(
         val models: List<String>,
         val error: String? = null,
+        val thinkingLevelsByModel: Map<String, List<String>> = emptyMap(),
+        val thinkingLevelClampsByModel: Map<String, Map<String, String>> = emptyMap(),
     )
 
     suspend fun fetchModels(
         config: LlmProviderConfig,
         piKernelBridge: PiKernelBridge? = null,
+        startPiBridgeIfNeeded: Boolean = true,
     ): FetchModelsResult = withContext(Dispatchers.IO) {
         try {
             val definition = PiProviderCatalog.resolve(
@@ -26,6 +45,7 @@ object ProviderModelCatalogClient {
                 return@withContext fetchPiBuiltinModels(
                     definition = definition,
                     piKernelBridge = piKernelBridge,
+                    startPiBridgeIfNeeded = startPiBridgeIfNeeded,
                 )
             }
             fetchOpenAiModels(config)
@@ -34,21 +54,53 @@ object ProviderModelCatalogClient {
         }
     }
 
+    suspend fun fetchPiThinkingLevels(
+        config: LlmProviderConfig,
+        piKernelBridge: PiKernelBridge?,
+        startPiBridgeIfNeeded: Boolean = true,
+    ): FetchModelsResult = withContext(Dispatchers.IO) {
+        try {
+            val definition = PiProviderCatalog.resolve(config.piProviderId)
+            if (!definition.isBuiltIn) return@withContext FetchModelsResult(emptyList())
+            fetchPiBuiltinModels(
+                definition = definition,
+                piKernelBridge = piKernelBridge,
+                startPiBridgeIfNeeded = startPiBridgeIfNeeded,
+            )
+        } catch (e: Exception) {
+            FetchModelsResult(emptyList(), e.message ?: "Unknown error")
+        }
+    }
+
     private suspend fun fetchPiBuiltinModels(
         definition: PiProviderDefinition,
         piKernelBridge: PiKernelBridge?,
+        startPiBridgeIfNeeded: Boolean,
     ): FetchModelsResult {
         if (piKernelBridge == null) {
             return FetchModelsResult(listOf(definition.defaultModelId).filter(String::isNotBlank))
         }
-        val providers = piKernelBridge.listProviders().optJSONArray("providers")
+        val providers = piKernelBridge.listProviders(startIfNeeded = startPiBridgeIfNeeded)
+            .optJSONArray("providers")
             ?: return FetchModelsResult(emptyList(), "No provider catalog was returned.")
         for (providerIndex in 0 until providers.length()) {
             val provider = providers.optJSONObject(providerIndex) ?: continue
             if (provider.optString("id") != definition.id) continue
             val models = provider.optJSONArray("models") ?: return FetchModelsResult(emptyList())
+            val thinkingLevelsByModel = mutableMapOf<String, List<String>>()
+            val thinkingLevelClampsByModel = mutableMapOf<String, Map<String, String>>()
+            for (modelIndex in 0 until models.length()) {
+                val model = models.optJSONObject(modelIndex) ?: continue
+                val modelId = model.optString("id").trim()
+                if (modelId.isBlank() || !model.optBoolean("reasoning")) continue
+                val levels = model.optJSONArray("thinking_levels") ?: JSONArray()
+                thinkingLevelsByModel[modelId] = supportedThinkingLevels(levels)
+                model.optJSONObject("thinking_level_clamps")?.let { clamps ->
+                    thinkingLevelClampsByModel[modelId] = piThinkingLevelClamps(clamps)
+                }
+            }
             return FetchModelsResult(
-                buildList {
+                models = buildList {
                     for (modelIndex in 0 until models.length()) {
                         val modelId = models.optJSONObject(modelIndex)
                             ?.optString("id")
@@ -57,6 +109,8 @@ object ProviderModelCatalogClient {
                         if (modelId.isNotBlank()) add(modelId)
                     }
                 }.distinct(),
+                thinkingLevelsByModel = thinkingLevelsByModel,
+                thinkingLevelClampsByModel = thinkingLevelClampsByModel,
             )
         }
         return FetchModelsResult(emptyList(), "Provider ${definition.id} is unavailable.")

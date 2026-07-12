@@ -32,8 +32,8 @@ private const val PiBridgeGuestPath = "/root/.aether/pi-bridge/bridge.mjs"
 private const val PiBridgeWorkingDirectory = "/root/.aether/pi-bridge"
 private const val PiBridgeNodeMinVersion = "22.19.0"
 private const val PiBridgeVersion = "2.0.0-alpha.0"
-private const val PiAiVersion = "0.80.3"
-private const val PiAgentCoreVersion = "0.80.3"
+private const val PiAiVersion = "0.80.6"
+private const val PiAgentCoreVersion = "0.80.6"
 private const val PiBridgeRequestTimeoutMillis = 10 * 60 * 1000L
 private const val PiBridgeOAuthTimeoutMillis = 15 * 60 * 1000L
 private const val PiBridgePingTimeoutMillis = 15_000L
@@ -74,10 +74,11 @@ class PiKernelBridge(
             onSetupProgress = onSetupProgress,
         )
 
-    suspend fun listProviders(): JSONObject =
+    suspend fun listProviders(startIfNeeded: Boolean = true): JSONObject =
         request(
             type = "list_providers",
             timeoutMillis = PiBridgePingTimeoutMillis,
+            startIfNeeded = startIfNeeded,
         )
 
     suspend fun loginProvider(

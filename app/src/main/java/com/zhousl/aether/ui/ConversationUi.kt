@@ -5,8 +5,10 @@ import android.graphics.SurfaceTexture
 import android.os.SystemClock
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
@@ -17,8 +19,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -63,7 +68,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.AutoAwesome
@@ -299,6 +303,9 @@ fun ConversationScreen(
     modelOptions: List<ProviderModelOption>,
     modelCatalogInfo: Map<String, ModelCatalogInfo>,
     selectedModelKey: String,
+    reasoningEffort: String,
+    thinkingLevelsByProviderModel: Map<String, List<String>>,
+    thinkingLevelClampsByProviderModel: Map<String, Map<String, String>>,
     availableSkills: List<InstalledSkill>,
     availableMcpServers: List<McpServerConfig>,
     selectedSkillIds: List<String>,
@@ -312,7 +319,9 @@ fun ConversationScreen(
     showStarterPromptHint: Boolean,
     showTermuxSetupNotice: Boolean,
     onInputChanged: (String) -> Unit,
-    onModelSelected: (String) -> Unit,
+    onModelSelected: (String, (Boolean) -> Unit) -> Unit,
+    onModelSelectorOpened: () -> Unit,
+    onReasoningEffortSelected: (String) -> Unit,
     onRemoveDraftAttachment: (String) -> Unit,
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
@@ -698,8 +707,13 @@ fun ConversationScreen(
                 modelOptions = modelOptions,
                 modelCatalogInfo = modelCatalogInfo,
                 selectedModelKey = selectedModelKey,
+                reasoningEffort = reasoningEffort,
+                thinkingLevelsByProviderModel = thinkingLevelsByProviderModel,
+                thinkingLevelClampsByProviderModel = thinkingLevelClampsByProviderModel,
                 onMenu = onMenu,
                 onModelSelected = onModelSelected,
+                onModelSelectorOpened = onModelSelectorOpened,
+                onReasoningEffortSelected = onReasoningEffortSelected,
                 onNewChat = onNewChat,
             )
 
@@ -771,8 +785,13 @@ private fun ConversationTopOverlay(
     modelOptions: List<ProviderModelOption>,
     modelCatalogInfo: Map<String, ModelCatalogInfo>,
     selectedModelKey: String,
+    reasoningEffort: String,
+    thinkingLevelsByProviderModel: Map<String, List<String>>,
+    thinkingLevelClampsByProviderModel: Map<String, Map<String, String>>,
     onMenu: () -> Unit,
-    onModelSelected: (String) -> Unit,
+    onModelSelected: (String, (Boolean) -> Unit) -> Unit,
+    onModelSelectorOpened: () -> Unit,
+    onReasoningEffortSelected: (String) -> Unit,
     onNewChat: () -> Unit,
 ) {
     Column(
@@ -788,8 +807,13 @@ private fun ConversationTopOverlay(
                 modelOptions = modelOptions,
                 modelCatalogInfo = modelCatalogInfo,
                 selectedModelKey = selectedModelKey,
+                reasoningEffort = reasoningEffort,
+                thinkingLevelsByProviderModel = thinkingLevelsByProviderModel,
+                thinkingLevelClampsByProviderModel = thinkingLevelClampsByProviderModel,
                 onMenu = onMenu,
                 onModelSelected = onModelSelected,
+                onModelSelectorOpened = onModelSelectorOpened,
+                onReasoningEffortSelected = onReasoningEffortSelected,
                 onNewChat = onNewChat,
             )
         }
@@ -808,8 +832,13 @@ private fun ConversationTopBar(
     modelOptions: List<ProviderModelOption>,
     modelCatalogInfo: Map<String, ModelCatalogInfo>,
     selectedModelKey: String,
+    reasoningEffort: String,
+    thinkingLevelsByProviderModel: Map<String, List<String>>,
+    thinkingLevelClampsByProviderModel: Map<String, Map<String, String>>,
     onMenu: () -> Unit,
-    onModelSelected: (String) -> Unit,
+    onModelSelected: (String, (Boolean) -> Unit) -> Unit,
+    onModelSelectorOpened: () -> Unit,
+    onReasoningEffortSelected: (String) -> Unit,
     onNewChat: () -> Unit,
 ) {
     Row(
@@ -831,7 +860,12 @@ private fun ConversationTopBar(
             options = modelOptions,
             modelCatalogInfo = modelCatalogInfo,
             selectedModelKey = selectedModelKey,
+            reasoningEffort = reasoningEffort,
+            thinkingLevelsByProviderModel = thinkingLevelsByProviderModel,
+            thinkingLevelClampsByProviderModel = thinkingLevelClampsByProviderModel,
             onSelected = onModelSelected,
+            onOpened = onModelSelectorOpened,
+            onReasoningEffortSelected = onReasoningEffortSelected,
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 12.dp),
@@ -852,16 +886,30 @@ private fun ConversationModelSelector(
     options: List<ProviderModelOption>,
     modelCatalogInfo: Map<String, ModelCatalogInfo>,
     selectedModelKey: String,
-    onSelected: (String) -> Unit,
+    reasoningEffort: String,
+    thinkingLevelsByProviderModel: Map<String, List<String>>,
+    thinkingLevelClampsByProviderModel: Map<String, Map<String, String>>,
+    onSelected: (String, (Boolean) -> Unit) -> Unit,
+    onOpened: () -> Unit,
+    onReasoningEffortSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showingReasoningEffort by remember { mutableStateOf(false) }
+    var menuSelectedModelKey by remember { mutableStateOf(selectedModelKey) }
     var anchorHeightPx by remember { mutableIntStateOf(0) }
     val menuVisibility = remember { MutableTransitionState(false) }
     menuVisibility.targetState = expanded
     val density = LocalDensity.current
     val menuWidth = 242.dp
-    val selectedOption = options.firstOrNull { it.key == selectedModelKey } ?: options.firstOrNull()
+    val selectedOption = options.firstOrNull { it.key == menuSelectedModelKey } ?: options.firstOrNull()
+    val supportedThinkingLevels = selectedOption?.let { option ->
+        thinkingLevelsByProviderModel["${option.piProviderId}/${option.modelId}"]
+    }.orEmpty()
+    val effectiveReasoningEffort = selectedOption?.let { option ->
+        thinkingLevelClampsByProviderModel["${option.piProviderId}/${option.modelId}"]
+            ?.get(reasoningEffort)
+    } ?: reasoningEffort
     val fallbackLabel = stringResource(R.string.chat_select_model)
     val selectedDisplay = remember(selectedOption, modelCatalogInfo) {
         selectedOption?.let { option ->
@@ -870,6 +918,12 @@ private fun ConversationModelSelector(
             )
         }
     }
+    val selectedModelName = selectedDisplay
+        ?.let { display -> listOf(display.primary, display.secondary).filter(String::isNotBlank) }
+        ?.joinToString(" ")
+        ?.takeIf(String::isNotBlank)
+        ?: selectedOption?.chatLabel
+        ?: fallbackLabel
 
     Box(
         modifier = modifier,
@@ -885,7 +939,12 @@ private fun ConversationModelSelector(
                 .shadow(4.dp, RoundedCornerShape(999.dp), ambientColor = ChatGptControlShadow, spotColor = ChatGptControlShadow)
                 .clip(RoundedCornerShape(999.dp))
                 .background(AetherSurface.copy(alpha = 0.96f))
-                .clickable(enabled = options.isNotEmpty()) { expanded = true },
+                .clickable(enabled = options.isNotEmpty()) {
+                    onOpened()
+                    menuSelectedModelKey = selectedModelKey
+                    showingReasoningEffort = false
+                    expanded = true
+                },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (selectedDisplay != null) {
@@ -931,36 +990,223 @@ private fun ConversationModelSelector(
                         transformOrigin = TransformOrigin(0.5f, 0f),
                     ) + slideOutVertically(targetOffsetY = { -it / 12 }),
                 ) {
-                    Column(
+                    AnimatedContent(
+                        targetState = showingReasoningEffort && supportedThinkingLevels.isNotEmpty(),
+                        transitionSpec = {
+                            val enteringOffset: (Int) -> Int = { width ->
+                                if (targetState) width / 10 else -width / 10
+                            }
+                            val exitingOffset: (Int) -> Int = { width ->
+                                if (targetState) -width / 10 else width / 10
+                            }
+                            (
+                                fadeIn(
+                                    animationSpec = tween(
+                                        durationMillis = 220,
+                                        delayMillis = 60,
+                                        easing = ChatGptMotionEasing,
+                                    ),
+                                ) + slideInHorizontally(
+                                    animationSpec = tween(
+                                        durationMillis = 340,
+                                        easing = ChatGptMotionEasing,
+                                    ),
+                                    initialOffsetX = enteringOffset,
+                                )
+                            ).togetherWith(
+                                fadeOut(
+                                    animationSpec = tween(
+                                        durationMillis = 150,
+                                        easing = ChatGptMotionEasing,
+                                    ),
+                                ) + slideOutHorizontally(
+                                    animationSpec = tween(
+                                        durationMillis = 280,
+                                        easing = ChatGptMotionEasing,
+                                    ),
+                                    targetOffsetX = exitingOffset,
+                                )
+                            ).using(
+                                SizeTransform(clip = false) { _, _ ->
+                                    tween(
+                                        durationMillis = 360,
+                                        easing = ChatGptMotionEasing,
+                                    )
+                                }
+                            )
+                        },
                         modifier = Modifier
                             .width(menuWidth)
                             .shadow(14.dp, RoundedCornerShape(22.dp), ambientColor = AetherScrim, spotColor = AetherScrim)
                             .clip(RoundedCornerShape(22.dp))
                             .background(AetherSurface)
                             .padding(vertical = 5.dp),
-                        horizontalAlignment = Alignment.Start,
+                        label = "conversation-model-menu-mode",
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .heightIn(max = 312.dp)
-                                .verticalScroll(rememberScrollState()),
-                            horizontalAlignment = Alignment.Start,
-                        ) {
-                            options.forEach { option ->
-                                val isSelected = option.key == selectedOption?.key
-                                ConversationModelMenuRow(
-                                    label = option.chatLabel,
-                                    catalogInfo = modelCatalogInfo[option.key],
-                                    selected = isSelected,
-                                    onClick = {
-                                        expanded = false
-                                        onSelected(option.key)
-                                    },
-                                )
-                            }
+                        if (it) {
+                            ConversationReasoningEffortMenu(
+                                efforts = supportedThinkingLevels,
+                                selectedEffort = effectiveReasoningEffort,
+                                selectedModelName = selectedModelName,
+                                onBack = { showingReasoningEffort = false },
+                                onSelected = { effort ->
+                                    onReasoningEffortSelected(effort)
+                                    expanded = false
+                                },
+                            )
+                        } else {
+                            ConversationModelListMenu(
+                                options = options,
+                                modelCatalogInfo = modelCatalogInfo,
+                                selectedOption = selectedOption,
+                                reasoningEffort = effectiveReasoningEffort,
+                                showReasoningEffort = supportedThinkingLevels.isNotEmpty(),
+                                onReasoningEffortClick = { showingReasoningEffort = true },
+                                onSelected = { option ->
+                                    menuSelectedModelKey = option.key
+                                    onSelected(option.key) { hasThinkingLevels ->
+                                        if (expanded && menuSelectedModelKey == option.key) {
+                                            if (hasThinkingLevels) {
+                                                showingReasoningEffort = true
+                                            } else {
+                                                expanded = false
+                                            }
+                                        }
+                                    }
+                                },
+                            )
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun reasoningEffortLabel(effort: String): String = when (effort.trim().lowercase()) {
+    "off" -> stringResource(R.string.chat_reasoning_effort_off)
+    "minimal" -> stringResource(R.string.chat_reasoning_effort_minimal)
+    "low" -> stringResource(R.string.chat_reasoning_effort_low)
+    "medium" -> stringResource(R.string.chat_reasoning_effort_medium)
+    "high" -> stringResource(R.string.chat_reasoning_effort_high)
+    "xhigh" -> stringResource(R.string.chat_reasoning_effort_xhigh)
+    "max" -> stringResource(R.string.chat_reasoning_effort_max)
+    else -> effort.trim().replaceFirstChar { it.titlecase() }
+}
+
+@Composable
+private fun ConversationMenuModeEntry(
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 19.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = AetherOnSurface,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = AetherOnSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationReasoningEffortMenu(
+    efforts: List<String>,
+    selectedEffort: String,
+    selectedModelName: String,
+    onBack: () -> Unit,
+    onSelected: (String) -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.Start,
+    ) {
+        ConversationMenuModeEntry(
+            title = stringResource(R.string.chat_model),
+            value = selectedModelName,
+            onClick = onBack,
+        )
+        efforts.forEach { effort ->
+            val selected = effort == selectedEffort
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(
+                        if (selected) AetherOnSurface.copy(alpha = 0.06f) else Color.Transparent,
+                    )
+                    .clickable { onSelected(effort) }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = reasoningEffortLabel(effort),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AetherOnSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                if (selected) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = AetherOnSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationModelListMenu(
+    options: List<ProviderModelOption>,
+    modelCatalogInfo: Map<String, ModelCatalogInfo>,
+    selectedOption: ProviderModelOption?,
+    reasoningEffort: String,
+    showReasoningEffort: Boolean,
+    onReasoningEffortClick: () -> Unit,
+    onSelected: (ProviderModelOption) -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.Start,
+    ) {
+        if (showReasoningEffort) {
+            ConversationMenuModeEntry(
+                title = stringResource(R.string.chat_reasoning_effort),
+                value = reasoningEffortLabel(reasoningEffort),
+                onClick = onReasoningEffortClick,
+            )
+        }
+        Column(
+            modifier = Modifier
+                .heightIn(max = 312.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            options.forEach { option ->
+                ConversationModelMenuRow(
+                    label = option.chatLabel,
+                    catalogInfo = modelCatalogInfo[option.key],
+                    selected = option.key == selectedOption?.key,
+                    onClick = { onSelected(option) },
+                )
             }
         }
     }

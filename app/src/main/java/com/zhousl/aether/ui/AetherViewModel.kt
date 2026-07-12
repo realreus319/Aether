@@ -17,6 +17,7 @@ import com.zhousl.aether.data.AgentModeAuthorizationMethod
 import com.zhousl.aether.data.AgentWorkspaceMode
 import com.zhousl.aether.data.AppLanguage
 import com.zhousl.aether.data.AppSettings
+import com.zhousl.aether.data.normalizeReasoningEffort
 import com.zhousl.aether.data.AppThemeMode
 import com.zhousl.aether.data.CurrentOnboardingVersion
 import com.zhousl.aether.data.DiagnosticRedactor
@@ -1880,6 +1881,14 @@ class AetherViewModel(
         }
     }
 
+    fun setReasoningEffort(effort: String) {
+        viewModelScope.launch {
+            settingsRepository.updateSettings(
+                _uiState.value.settings.copy(reasoningEffort = normalizeReasoningEffort(effort)),
+            )
+        }
+    }
+
     fun setCurrentChatModelSelection(modelKey: String) {
         var didUpdate = false
         var sessionIdForPersistence: String? = null
@@ -1914,6 +1923,92 @@ class AetherViewModel(
         }
     }
 
+    fun setCurrentChatModelSelectionAndResolveThinkingLevels(
+        modelKey: String,
+        onResolved: (Boolean) -> Unit,
+    ) {
+        setCurrentChatModelSelection(modelKey)
+        val current = _uiState.value
+        val option = current.providerConfigs.availableModelOptions()
+            .firstOrNull { it.key == modelKey }
+            ?: return onResolved(false)
+        val cacheKey = "${option.piProviderId.trim()}/${option.modelId.trim()}"
+        current.thinkingLevelsByProviderModel[cacheKey]?.let { levels ->
+            onResolved(levels.isNotEmpty())
+            return
+        }
+        val config = current.providerConfigs.firstOrNull { it.id == option.providerConfigId }
+            ?: return onResolved(false)
+        val definition = com.zhousl.aether.data.PiProviderCatalog.resolve(config.piProviderId)
+        if (!definition.isBuiltIn) {
+            onResolved(false)
+            return
+        }
+
+        viewModelScope.launch {
+            val result = ProviderModelCatalogClient.fetchPiThinkingLevels(
+                config = config,
+                piKernelBridge = runtime.piKernelBridge,
+                startPiBridgeIfNeeded = false,
+            )
+            if (result.error != null) {
+                onResolved(false)
+                return@launch
+            }
+            _uiState.update { state ->
+                state.copy(
+                    thinkingLevelsByProviderModel = state.thinkingLevelsByProviderModel +
+                        result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                    thinkingLevelClampsByProviderModel = state.thinkingLevelClampsByProviderModel +
+                        result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                )
+            }
+            onResolved(result.thinkingLevelsByModel[option.modelId].orEmpty().isNotEmpty())
+        }
+    }
+
+    fun refreshCurrentChatThinkingLevels() {
+        val current = _uiState.value
+        val selectedModelKey = current.sessions
+            .firstOrNull { it.id == current.currentSessionId }
+            ?.selectedModelKey
+            ?.takeIf(String::isNotBlank)
+            ?: current.draftSelectedModelKey.takeIf(String::isNotBlank)
+            ?: resolveDefaultChatModelKey(current.settings, current.providerConfigs)
+        val option = current.providerConfigs.availableModelOptions()
+            .firstOrNull { it.key == selectedModelKey }
+            ?: return
+        val config = current.providerConfigs.firstOrNull { it.id == option.providerConfigId }
+            ?: return
+        val definition = com.zhousl.aether.data.PiProviderCatalog.resolve(config.piProviderId)
+        if (!definition.isBuiltIn) return
+
+        viewModelScope.launch {
+            val result = ProviderModelCatalogClient.fetchPiThinkingLevels(
+                config = config,
+                piKernelBridge = runtime.piKernelBridge,
+                startPiBridgeIfNeeded = false,
+            )
+            if (result.error != null) return@launch
+            _uiState.update { state ->
+                state.copy(
+                    thinkingLevelsByProviderModel = state.thinkingLevelsByProviderModel +
+                        result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                    thinkingLevelClampsByProviderModel = state.thinkingLevelClampsByProviderModel +
+                        result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                )
+            }
+        }
+    }
+
     fun fetchModels(
         config: LlmProviderConfig,
         onComplete: (List<String>) -> Unit,
@@ -1924,7 +2019,19 @@ class AetherViewModel(
                 config = config,
                 piKernelBridge = runtime.piKernelBridge,
             )
-            _uiState.update { it.copy(isFetchingModels = false) }
+            _uiState.update { current ->
+                current.copy(
+                    isFetchingModels = false,
+                    thinkingLevelsByProviderModel = current.thinkingLevelsByProviderModel +
+                        result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                    thinkingLevelClampsByProviderModel = current.thinkingLevelClampsByProviderModel +
+                        result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
+                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                        },
+                )
+            }
             onComplete(result.models)
             if (result.error != null) {
                 _transientMessages.emit(
@@ -2069,16 +2176,32 @@ class AetherViewModel(
                     value = value,
                     cancelled = cancelled,
                 )
-            }
-            _uiState.update { current ->
-                if (current.providerAuthState.prompt?.id != promptId) {
-                    current
-                } else {
-                    current.copy(
-                        providerAuthState = current.providerAuthState.copy(prompt = null)
-                    )
-                }
-            }
+            }.fold(
+                onSuccess = {
+                    _uiState.update { current ->
+                        if (current.providerAuthState.prompt?.id != promptId) {
+                            current
+                        } else {
+                            current.copy(
+                                providerAuthState = current.providerAuthState.copy(prompt = null)
+                            )
+                        }
+                    }
+                },
+                onFailure = { throwable ->
+                    _uiState.update { current ->
+                        if (current.providerAuthState.prompt?.id != promptId) {
+                            current
+                        } else {
+                            current.copy(
+                                providerAuthState = current.providerAuthState.copy(
+                                    errorMessage = throwable.userFacingMessage(),
+                                )
+                            )
+                        }
+                    }
+                },
+            )
         }
     }
 
@@ -4566,6 +4689,7 @@ class AetherViewModel(
         put("baseUrl", baseUrl)
         put("modelId", modelId)
         put("customHeaders", customHeaders.toJsonArray())
+        put("reasoningEffort", reasoningEffort)
         put("systemPrompt", systemPrompt)
         put("tavilyApiKey", tavilyApiKey)
         put("tavilyBaseUrl", tavilyBaseUrl)
@@ -4651,6 +4775,9 @@ class AetherViewModel(
             baseUrl = importedBaseUrl,
             modelId = json.optString("modelId", defaults.modelId),
             customHeaders = parseCustomHeaders(json.optJSONArray("customHeaders")),
+            reasoningEffort = normalizeReasoningEffort(
+                json.optString("reasoningEffort", defaults.reasoningEffort),
+            ),
             systemPrompt = json.optString("systemPrompt", defaults.systemPrompt),
             tavilyApiKey = json.optString("tavilyApiKey", defaults.tavilyApiKey),
             tavilyBaseUrl = normalizeTavilyBaseUrl(

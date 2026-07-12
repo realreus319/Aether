@@ -4,6 +4,7 @@ import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.LlmCustomHeader
 import com.zhousl.aether.data.LlmTokenUsage
 import com.zhousl.aether.data.PiProviderCatalog
+import com.zhousl.aether.data.normalizeReasoningEffort
 import com.zhousl.aether.data.ProviderAuthMethod
 import org.json.JSONObject
 import java.util.Locale
@@ -107,7 +108,7 @@ fun AppSettings.toPiModelConfig(): PiModelConfig {
             ""
         },
         customHeaders = customHeaders.toPiHeaderMap(),
-        reasoning = supportsPiReasoning(),
+        reasoning = false,
         timeoutMillis = llmInactivityReconnectTimeoutSeconds
             .coerceIn(30, 3_600) * 1_000,
         authMethod = effectiveAuthMethod,
@@ -123,7 +124,7 @@ fun AppSettings.toPiModelConfig(): PiModelConfig {
 }
 
 internal fun AppSettings.toPiThinkingLevel(): String =
-    if (supportsPiReasoning()) "medium" else "off"
+    normalizeReasoningEffort(reasoningEffort)
 
 fun fauxPiModelConfig(
     modelId: String = "faux-1",
@@ -196,27 +197,6 @@ private fun List<LlmCustomHeader>.toPiHeaderMap(): Map<String, String> =
         }
     }.toMap()
 
-private fun AppSettings.supportsPiReasoning(): Boolean {
-    val normalizedModel = modelId.trim().lowercase(Locale.US)
-    return listOf(
-        "claude-3-7",
-        "claude-3.7",
-        "claude-opus-4",
-        "claude-sonnet-4",
-        "gemini-2.5",
-        "gemini-3",
-        "gpt-5",
-        "o1",
-        "o3",
-        "o4",
-        "codex",
-        "deepseek-r1",
-        "deepseek-reasoner",
-        "qwq",
-        "qwen3",
-        "kimi-k2-thinking",
-    ).any(normalizedModel::contains)
-}
 
 private fun JSONObject.toLlmTokenUsage(): LlmTokenUsage? {
     val usage = LlmTokenUsage(
