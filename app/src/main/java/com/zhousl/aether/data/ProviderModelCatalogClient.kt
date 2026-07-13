@@ -41,7 +41,7 @@ object ProviderModelCatalogClient {
             val definition = PiProviderCatalog.resolve(
                 config.piProviderId,
             )
-            if (definition.isBuiltIn) {
+            if (definition.isBuiltIn && !config.usesCustomOpenAiCompatibleBaseUrl()) {
                 return@withContext fetchPiBuiltinModels(
                     definition = definition,
                     piKernelBridge = piKernelBridge,
@@ -114,6 +114,13 @@ object ProviderModelCatalogClient {
             )
         }
         return FetchModelsResult(emptyList(), "Provider ${definition.id} is unavailable.")
+    }
+
+    private fun LlmProviderConfig.usesCustomOpenAiCompatibleBaseUrl(): Boolean {
+        val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+        return piProviderId == "openai" &&
+            normalizedBaseUrl.isNotBlank() &&
+            normalizedBaseUrl != PiProviderCatalog.resolve("openai").defaultBaseUrl
     }
 
     private fun fetchOpenAiModels(config: LlmProviderConfig): FetchModelsResult {
