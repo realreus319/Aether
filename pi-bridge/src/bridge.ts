@@ -73,6 +73,7 @@ const AETHER_MANUAL_OAUTH_CALLBACK_HOST = "203.0.113.1";
 const OAUTH_FETCH_MAX_ATTEMPTS = 3;
 const DEFAULT_HARNESS_SESSION_LIMIT = 8;
 const DEFAULT_HARNESS_SESSION_TTL_MS = 30 * 60 * 1000;
+const CUSTOM_BASE_URL_BUILTIN_PROVIDER_IDS = new Set(["openai", "anthropic"]);
 
 type JsonObject = Record<string, unknown>;
 
@@ -611,6 +612,10 @@ function createAetherModel(config: ModelConfig): Model<string> {
   };
 }
 
+function normalizedBaseUrl(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "");
+}
+
 function buildModels(config: ModelConfig): {
   models: MutableModels;
   model: Model<string>;
@@ -654,8 +659,14 @@ function buildModels(config: ModelConfig): {
   if (config.provider_type === "builtin") {
     const provider = builtinProviderById.get(config.pi_provider_id);
     if (!provider) throw new Error(`Unknown built-in Pi provider: ${config.pi_provider_id}`);
-    const builtinModel = provider.getModels().find((candidate) => candidate.id === config.model_id);
-    if (!builtinModel) {
+    const providerModels = provider.getModels();
+    const builtinModel = providerModels.find((candidate) => candidate.id === config.model_id);
+    const providerBaseUrl = provider.baseUrl ?? providerModels[0]?.baseUrl;
+    const usesCustomBaseUrl =
+      CUSTOM_BASE_URL_BUILTIN_PROVIDER_IDS.has(provider.id) &&
+      normalizedBaseUrl(config.base_url) !== normalizedBaseUrl(providerBaseUrl);
+    const modelTemplate = builtinModel ?? (usesCustomBaseUrl ? providerModels[0] : undefined);
+    if (!modelTemplate) {
       throw new Error(
         `Unknown model ${config.model_id} for built-in Pi provider ${config.pi_provider_id}.`,
       );
@@ -671,10 +682,25 @@ function buildModels(config: ModelConfig): {
     });
     models.setProvider(provider);
     const model = {
-      ...builtinModel,
+      ...modelTemplate,
+      ...(builtinModel
+        ? {}
+        : {
+            id: config.model_id,
+            name: config.model_id,
+            reasoning: config.reasoning ?? false,
+            contextWindow: config.context_window ?? 128000,
+            maxTokens: config.max_tokens ?? 16384,
+            cost: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+          }),
       ...(config.base_url ? { baseUrl: config.base_url } : {}),
       headers: {
-        ...builtinModel.headers,
+        ...modelTemplate.headers,
         ...config.custom_headers,
       },
     } as Model<string>;
