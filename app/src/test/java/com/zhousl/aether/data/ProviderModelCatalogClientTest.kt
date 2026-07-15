@@ -101,4 +101,34 @@ class ProviderModelCatalogClientTest {
         assertEquals(null, result.error)
         assertEquals(listOf("gemini-2.5-flash"), result.models)
     }
+
+    @Test
+    fun customOpenAiBaseUrlFetchesModelsFromConfiguredEndpoint() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .addHeader("Content-Type", "application/json")
+                .setBody("""{"data":[{"id":"third-party-model"}]}""")
+        )
+        server.start()
+
+        try {
+            val result = ProviderModelCatalogClient.fetchModels(
+                LlmProviderConfig(
+                    providerId = "custom-openai",
+                    name = "Custom OpenAI",
+                    piProviderId = "openai",
+                    apiKey = "test-key",
+                    baseUrl = server.url("/v1").toString(),
+                    modelId = "",
+                )
+            )
+
+            assertEquals(null, result.error)
+            assertEquals(listOf("third-party-model"), result.models)
+            assertEquals("/v1/models", server.takeRequest().path)
+        } finally {
+            server.shutdown()
+        }
+    }
 }

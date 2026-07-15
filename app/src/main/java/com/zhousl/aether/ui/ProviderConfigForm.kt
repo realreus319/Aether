@@ -534,11 +534,9 @@ fun ProviderConfigurationForm(
         }
 
         ProviderFormCard(cardColor = cardColor) {
-            ProviderFormTextField(
-                label = stringResource(R.string.provider_form_base_url),
-                value = state.baseUrl,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                onValueChange = { state.baseUrl = it },
+            ProviderBaseUrlField(
+                state = state,
+                definition = selectedDefinition,
             )
             ProviderFormDivider()
             ProviderFormTextField(
@@ -721,27 +719,46 @@ fun ProviderAuthenticationSetup(
                             onValueChange = { state.apiKey = it },
                             isSecret = true,
                         )
+                        if (definition.supportsCustomBaseUrl) {
+                            ProviderFormDivider()
+                            ProviderBaseUrlField(
+                                state = state,
+                                definition = definition,
+                                resetToDefaultWhenBlank = true,
+                            )
+                        }
                     }
                 }
             }
 
-            ProviderAuthMethod.OAuth -> ProviderOAuthField(
-                definition = definition,
-                credentialJson = state.oauthCredentialJson,
-                oauthState = relevantAuthState,
-                onStartOAuthLogin = { flow ->
-                    onClearAuthState()
-                    onStartProviderLogin(state.buildConfig().id, definition.id, ProviderAuthMethod.OAuth, flow)
-                },
-                onDisconnect = {
-                    state.oauthCredentialJson = ""
-                    onClearAuthState()
-                },
-                onCopyDeviceCode = { code ->
-                    clipboardManager.setText(AnnotatedString(code))
-                },
-                cardColor = cardColor,
-            )
+            ProviderAuthMethod.OAuth -> {
+                ProviderOAuthField(
+                    definition = definition,
+                    credentialJson = state.oauthCredentialJson,
+                    oauthState = relevantAuthState,
+                    onStartOAuthLogin = { flow ->
+                        onClearAuthState()
+                        onStartProviderLogin(state.buildConfig().id, definition.id, ProviderAuthMethod.OAuth, flow)
+                    },
+                    onDisconnect = {
+                        state.oauthCredentialJson = ""
+                        onClearAuthState()
+                    },
+                    onCopyDeviceCode = { code ->
+                        clipboardManager.setText(AnnotatedString(code))
+                    },
+                    cardColor = cardColor,
+                )
+                if (definition.supportsCustomBaseUrl) {
+                    ProviderFormCard(cardColor = cardColor) {
+                        ProviderBaseUrlField(
+                            state = state,
+                            definition = definition,
+                            resetToDefaultWhenBlank = true,
+                        )
+                    }
+                }
+            }
 
             ProviderAuthMethod.Ambient -> ProviderFormCard(cardColor = cardColor) {
                 ProviderEnvironmentVariablesField(
@@ -753,13 +770,11 @@ fun ProviderAuthenticationSetup(
             }
         }
 
-        if (definition.requiresBaseUrl || !definition.isBuiltIn) {
+        if (definition.requiresBaseUrl || (!definition.isBuiltIn && !definition.supportsCustomBaseUrl)) {
             ProviderFormCard(cardColor = cardColor) {
-                ProviderFormTextField(
-                    label = stringResource(R.string.provider_form_base_url),
-                    value = state.baseUrl,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    onValueChange = { state.baseUrl = it },
+                ProviderBaseUrlField(
+                    state = state,
+                    definition = definition,
                 )
             }
         }
@@ -1190,11 +1205,9 @@ fun AddProviderWizard(
                         )
                         if (!state.selectedDefinition.requiresBaseUrl && state.selectedDefinition.isBuiltIn) {
                             ProviderFormDivider()
-                            ProviderFormTextField(
-                                label = stringResource(R.string.provider_form_base_url),
-                                value = state.baseUrl,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                onValueChange = { state.baseUrl = it },
+                            ProviderBaseUrlField(
+                                state = state,
+                                definition = state.selectedDefinition,
                             )
                         }
                         ProviderFormDivider()
@@ -1492,6 +1505,26 @@ private fun ProviderFormCard(
 @Composable
 private fun ProviderFormDivider() {
     Spacer(modifier = Modifier.height(8.dp))
+}
+
+@Composable
+private fun ProviderBaseUrlField(
+    state: ProviderFormState,
+    definition: PiProviderDefinition,
+    resetToDefaultWhenBlank: Boolean = false,
+) {
+    ProviderFormTextField(
+        label = stringResource(R.string.provider_form_base_url),
+        value = state.baseUrl,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+        onValueChange = { value ->
+            state.baseUrl = if (resetToDefaultWhenBlank) {
+                value.ifBlank { definition.defaultBaseUrl }
+            } else {
+                value
+            }
+        },
+    )
 }
 
 @Composable

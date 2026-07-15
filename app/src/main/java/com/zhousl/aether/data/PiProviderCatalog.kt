@@ -34,6 +34,7 @@ data class PiProviderDefinition(
     val supportsOAuth: Boolean = false,
     val supportsAmbientAuth: Boolean = false,
     val requiresBaseUrl: Boolean = false,
+    val supportsCustomBaseUrl: Boolean = false,
     val isBuiltIn: Boolean = true,
     val category: String = "Other",
 )
@@ -44,9 +45,24 @@ const val DefaultCustomModelId = "gpt-5.4"
 
 object PiProviderCatalog {
     val providers: List<PiProviderDefinition> = listOf(
-        builtin("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.4", category = "Recommended"),
+        builtin(
+            "openai",
+            "OpenAI",
+            "https://api.openai.com/v1",
+            "gpt-5.4",
+            supportsCustomBaseUrl = true,
+            category = "Recommended",
+        ),
         builtin("openai-codex", "OpenAI Codex", "https://chatgpt.com/backend-api", "gpt-5.3-codex-spark", supportsApiKey = false, supportsOAuth = true, category = "Recommended"),
-        builtin("anthropic", "Anthropic", "https://api.anthropic.com", "claude-sonnet-4-5", supportsOAuth = true, category = "Recommended"),
+        builtin(
+            "anthropic",
+            "Anthropic",
+            "https://api.anthropic.com",
+            "claude-sonnet-4-5",
+            supportsOAuth = true,
+            supportsCustomBaseUrl = true,
+            category = "Recommended",
+        ),
         builtin("google", "Google", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", category = "Recommended"),
         builtin("google-vertex", "Google Vertex AI", "", "gemini-2.5-flash", supportsInteractiveApiKey = false, supportsAmbientAuth = true, category = "Recommended"),
         builtin("github-copilot", "GitHub Copilot", "https://api.individual.githubcopilot.com", "gpt-5.4", supportsOAuth = true, category = "Recommended"),
@@ -122,6 +138,7 @@ private fun builtin(
     supportsOAuth: Boolean = false,
     supportsAmbientAuth: Boolean = false,
     requiresBaseUrl: Boolean = false,
+    supportsCustomBaseUrl: Boolean = false,
     category: String,
 ): PiProviderDefinition = PiProviderDefinition(
     id = id,
@@ -133,6 +150,7 @@ private fun builtin(
     supportsOAuth = supportsOAuth,
     supportsAmbientAuth = supportsAmbientAuth,
     requiresBaseUrl = requiresBaseUrl,
+    supportsCustomBaseUrl = supportsCustomBaseUrl,
     category = category,
 )
 
