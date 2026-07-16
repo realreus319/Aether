@@ -1,5 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="app_name">Aether</string>
+
     <!-- Common -->
     <string name="common_menu">菜单</string>
     <string name="common_new_chat">新建对话</string>
@@ -113,6 +115,7 @@
     <string name="chat_voice">语音</string>
     <string name="chat_images">图片</string>
     <string name="chat_apps">应用</string>
+    <string name="chat_gpts">GPTs</string>
     <string name="chat_recent">最近</string>
     <string name="chat_no_conversations_yet">还没有对话。</string>
     <string name="chat_empty_draft">空白草稿</string>
@@ -141,6 +144,13 @@
     <string name="chat_model">模型</string>
     <string name="chat_reasoning_effort">推理强度</string>
     <string name="chat_reasoning_effort_choose">选择推理强度</string>
+    <string name="chat_reasoning_effort_off">关闭</string>
+    <string name="chat_reasoning_effort_minimal">极低</string>
+    <string name="chat_reasoning_effort_low">低</string>
+    <string name="chat_reasoning_effort_medium">中等</string>
+    <string name="chat_reasoning_effort_high">高</string>
+    <string name="chat_reasoning_effort_xhigh">极高</string>
+    <string name="chat_reasoning_effort_max">最高</string>
     <string name="chat_first_prompt_ready_title">你的第一条提示已准备好</string>
     <string name="chat_first_prompt_ready_subtitle">点击发送来测试 Aether。</string>
     <string name="chat_editing_earlier_message_title">正在编辑较早的消息</string>
@@ -164,8 +174,11 @@
     <!-- Settings -->
     <string name="settings_title">设置</string>
     <string name="settings_general">通用设置</string>
+    <string name="settings_general_summary">%1$s / %2$s</string>
     <string name="settings_language">语言</string>
     <string name="settings_language_description">选择应用界面语言。</string>
+    <string name="settings_language_english_interface">英文界面</string>
+    <string name="settings_language_simplified_chinese_interface">简体中文界面</string>
     <string name="settings_theme">主题</string>
     <string name="settings_theme_description">选择应用界面外观。</string>
     <string name="theme_system">跟随系统</string>
@@ -364,6 +377,7 @@
     <string name="settings_custom_instructions">自定义指令</string>
     <string name="settings_tavily_configured">已配置 Tavily 搜索</string>
     <string name="settings_tavily_not_configured">URL 抓取可用，Tavily 未配置</string>
+    <string name="settings_tavily_base_url">Tavily 基础 URL</string>
     <string name="settings_background_runs_on">后台运行已开启</string>
     <string name="settings_background_runs_off">后台运行已关闭</string>
     <string name="settings_connected">已连接</string>

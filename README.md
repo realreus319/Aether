@@ -59,17 +59,11 @@ Aether's UI and interactions are heavily inspired by excellent, mature applicati
 - **Pi Harness Kernel**: Powered by the Pi framework, providing the widest LLM provider compatibility and a lightweight, highly efficient Agent execution engine.
 - **Built-in Alpine VM**: Includes an automatically installed Alpine Linux environment to run shell commands and tools out of the box.
 - **Extensible Host Control**: Supports optional Shizuku and Termux integration for direct device manipulation and automation.
-- **Trusted-code Extensions**: One package can extend the Pi agent and inject native Compose/WebView UI or app logic into Aether. See [Aether App Extensions](docs/AETHER_EXTENSIONS.md).
+- **Extensions**: Compatible with Pi Extensions, allowing for highly flexible modifications to Aether's UI and application logic.
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Android 13 or higher
-- Optional (for device control): Rooted device or [Shizuku](https://shizuku.rikka.app/) installed, or [Termux](https://termux.dev/) installed
-
-### Installation
-1. Download the latest [Release APK](https://github.com/Zhou-Shilin/Aether/releases) or [Nightly APK artifact](https://nightly.link/Zhou-Shilin/Aether/workflows/build-nightly-apk.yml/main/Aether-nightly.zip).
-2. Follow the "Get Started" tour to configure the app.
+See <https://aether.baimoqilin.com/docs/quickstart>.
 
 ---
 

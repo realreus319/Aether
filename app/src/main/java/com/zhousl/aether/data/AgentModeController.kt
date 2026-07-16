@@ -1057,6 +1057,7 @@ class AgentModeController(
         service
     }
 
+    @Suppress("RestrictedApi")
     private suspend fun requireShizukuService(): IAetherAgentModeService = shizukuServiceMutex.withLock {
         val existing = shizukuService
         if (existing != null) {

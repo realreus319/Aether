@@ -64,19 +64,13 @@ Aether 的 UI 和交互大量参考了 ChatGPT、Codex CLI/App、Gemini、Poco A
 - **Pi Harness 内核**: 采用 Pi 框架，拥有最广泛的 Model Provider 兼容性，以及最轻量、最高效的 Agent 执行引擎。
 - **内置 Alpine 虚拟机**: 自动安装 Alpine Linux 运行环境，开箱即用，支持各种 Linux 工具与命令行操作。
 - **扩展主机控制**: 支持可选的 Shizuku 与 Termux 扩展，用于直接操纵和控制手机系统。
-- **可信代码 Extensions**: 同一个 package 可以同时扩展 Pi Agent，并向 Aether 注入原生 Compose/WebView UI 与应用逻辑。参见 [Aether App Extensions](docs/AETHER_EXTENSIONS.md)。
+- **Extensions**: 兼容 Pi Extensions，同时支持对 Aether 的 UI 和应用逻辑进行高度自由地更改。
 
 ---
 
 ## 🚀 快速开始
 
-### 前置要求
-- Android 13 或更高版本
-- 可选（用于控制手机）：已 Root 或已安装 [Shizuku](https://shizuku.rikka.app/)，或已安装 [Termux](https://termux.dev/)
-
-### 安装步骤
-1. 下载最新的 [Release APK](https://github.com/Zhou-Shilin/Aether/releases) 或 [Nightly APK artifact](https://nightly.link/Zhou-Shilin/Aether/workflows/build-nightly-apk.yml/main/Aether-nightly.zip)。
-2. 根据 Get Started Tour 指引配置。
+见 <https://aether.baimoqilin.com/docs/quickstart>.
 
 ---
 
