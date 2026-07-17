@@ -284,7 +284,10 @@ val buildPiBridge = tasks.register<Exec>("buildPiBridge") {
     inputs.file(piBridgeProjectDir.file("package.json"))
     inputs.file(piBridgeProjectDir.file("tsconfig.json"))
     inputs.dir(piBridgeProjectDir.dir("src"))
-    outputs.file(piBridgeProjectDir.file("dist/bridge.mjs"))
+    outputs.files(
+        piBridgeProjectDir.file("dist/bridge.mjs"),
+        piBridgeProjectDir.file("dist/channel-bridge.mjs"),
+    )
 }
 
 val copyPiProviderIcons = tasks.register<SyncGeneratedSourceDirectory>("copyPiProviderIcons") {
@@ -308,7 +311,9 @@ val copyPiProviderIcons = tasks.register<SyncGeneratedSourceDirectory>("copyPiPr
 val copyPiBridgeAsset = tasks.register<SyncGeneratedSourceDirectory>("copyPiBridgeAsset") {
     dependsOn(buildPiBridge)
     outputDirectory.set(piBridgeGeneratedAssetsDir)
-    from(piBridgeProjectDir.file("dist/bridge.mjs"))
+    from(piBridgeProjectDir.dir("dist")) {
+        include("bridge.mjs", "channel-bridge.mjs")
+    }
     eachFile {
         path = "pi-bridge/$path"
     }
