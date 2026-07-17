@@ -9,7 +9,9 @@ import java.io.OutputStreamWriter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -23,6 +25,7 @@ class ChannelKernelBridge(
     private val diagnosticLogger: AetherDiagnosticLogger = AetherDiagnosticLogger.NoOp,
 ) {
     private val lock = Any()
+    private val eventScope = CoroutineScope(Dispatchers.Default)
     private val responses = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
     @Volatile private var process: Process? = null
     @Volatile private var writer: BufferedWriter? = null
@@ -143,9 +146,7 @@ class ChannelKernelBridge(
                 val event = frame.optString("event")
                 val payload = frame.optJSONObject("payload") ?: JSONObject()
                 val handler = eventHandler ?: return
-                kotlinx.coroutines.CoroutineScope(Dispatchers.Default).launchSafely {
-                    handler(event, payload)
-                }
+                eventScope.launch { runCatching { handler(event, payload) } }
             }
             "response" -> responses[id]?.complete(frame.optJSONObject("payload") ?: JSONObject())
             "error" -> responses[id]?.completeExceptionally(
@@ -153,8 +154,4 @@ class ChannelKernelBridge(
             )
         }
     }
-}
-
-private fun kotlinx.coroutines.CoroutineScope.launchSafely(block: suspend () -> Unit) {
-    kotlinx.coroutines.launch { runCatching { block() } }
 }
