@@ -7,7 +7,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --banner:js=\"import { createRequire as __aetherCreateRequire } from 'node:module';const require = __aetherCreateRequire(import.meta.url);\" --outfile=dist/bridge.mjs",
+    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --banner:js=\"import { createRequire as __aetherCreateRequire } from 'node:module';const require = __aetherCreateRequire(import.meta.url);\" --outfile=dist/bridge.mjs && esbuild src/channel-bridge.ts --bundle --platform=node --format=esm --target=node22.19 --packages=external --outfile=dist/channel-bridge.mjs",
     "check": "tsc --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:ping": "node dist/bridge.mjs --ping"
@@ -17,6 +17,8 @@
     "@earendil-works/pi-ai": "0.80.6",
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
+    "@larksuiteoapi/node-sdk": "1.71.1",
+    "dingtalk-stream": "2.1.6-beta.1",
     "jiti": "2.7.0",
     "typebox": "1.1.38"
   },
