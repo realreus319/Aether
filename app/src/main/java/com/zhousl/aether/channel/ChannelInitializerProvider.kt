@@ -4,11 +4,18 @@ import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
 import android.net.Uri
+import com.zhousl.aether.aetherRuntime
 
-/** Starts the channel foreground host when the application process is created. */
+/** Starts the channel foreground host only when a channel config exists. */
 class ChannelInitializerProvider : ContentProvider() {
     override fun onCreate(): Boolean {
-        context?.let(AetherChannelService::ensureRunning)
+        val appContext = context?.applicationContext ?: return true
+        val configFile = appContext.aetherRuntime.alpineRuntime.resolveManagedGuestPath(
+            "/root/.aether/channels.json"
+        )
+        if (configFile.isFile && configFile.length() > 0L) {
+            AetherChannelService.ensureRunning(appContext)
+        }
         return true
     }
 
