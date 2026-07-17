@@ -121,7 +121,10 @@ import com.zhousl.aether.data.ProviderModelOption
 import com.zhousl.aether.data.availableModelOptions
 import com.zhousl.aether.data.isOnboardingComplete
 import com.zhousl.aether.data.resolveAutomaticModelKey
+import com.zhousl.aether.data.LocalRuntimeId
 import com.zhousl.aether.mod.AetherNativeModState
+import com.zhousl.aether.runtime.LocalRuntimeIssue
+import com.zhousl.aether.runtime.LocalRuntimeSetupState
 import com.zhousl.aether.termux.TermuxContract
 import com.zhousl.aether.termux.TermuxSetupIssue
 import com.zhousl.aether.termux.TermuxSetupState
@@ -677,12 +680,21 @@ private fun AetherAppContent(
                     AppScreen.Onboarding -> OnboardingScreen(
                         initialStep = uiState.onboardingStep,
                         replayMode = uiState.isOnboardingReplay,
+                        setupPreviewMode = uiState.developerAlpineSetupPreviewState != null,
                         existingProviderConfig = activeProviderConfig,
                         isFetchingModels = uiState.isFetchingModels,
                         providerAuthState = uiState.providerAuthState,
-                        piCoreSetupState = uiState.piCoreSetupState,
+                        piCoreSetupState = uiState.developerAlpineSetupPreviewState
+                            ?: uiState.piCoreSetupState,
                         termuxSetupState = effectiveTermuxSetupState,
-                        alpineSetupState = uiState.alpineSetupState,
+                        alpineSetupState = if (uiState.developerAlpineSetupPreviewState != null) {
+                            LocalRuntimeSetupState(
+                                runtimeId = LocalRuntimeId.Alpine,
+                                issue = LocalRuntimeIssue.Ready,
+                            )
+                        } else {
+                            uiState.alpineSetupState
+                        },
                         rootSetupState = uiState.rootSetupState,
                         agentModeAuthorizationMethod = uiState.settings.agentModeAuthorizationMethod,
                         tavilyApiKey = uiState.settings.tavilyApiKey,
@@ -710,8 +722,20 @@ private fun AetherAppContent(
                             startTermuxSetupAction("onboarding_install_termux") { openTermuxInstallPage(context) }
                         },
                         onRefreshTermuxSetup = viewModel::refreshTermuxSetup,
-                        onInitializeAlpineRuntime = { viewModel.initializeAlpineRuntime(makeDefault = true) },
-                        onRefreshAlpineSetup = viewModel::refreshAlpineSetup,
+                        onInitializeAlpineRuntime = {
+                            if (uiState.developerAlpineSetupPreviewState != null) {
+                                viewModel.restartDeveloperAlpineSetupPreview()
+                            } else {
+                                viewModel.initializeAlpineRuntime(makeDefault = true)
+                            }
+                        },
+                        onRefreshAlpineSetup = {
+                            if (uiState.developerAlpineSetupPreviewState != null) {
+                                viewModel.restartDeveloperAlpineSetupPreview()
+                            } else {
+                                viewModel.refreshAlpineSetup()
+                            }
+                        },
                         onRefreshRootSetup = viewModel::refreshRootSetup,
                         onConfigureWithRoot = viewModel::configureLocalAccessWithRoot,
                         onSaveAgentModeAuthorization = { enabled, method ->
@@ -991,6 +1015,7 @@ private fun AetherAppContent(
                     onInstallShizuku = { openShizukuInstallPage(context) },
                     onReplayOnboarding = viewModel::openOnboardingFromSettings,
                     onReplayFollowUpOnboarding = viewModel::openFollowUpOnboardingFromSettings,
+                    onReplayAlpineSetupPreview = viewModel::openDeveloperAlpineSetupPreview,
                     onStopAgentModeDisplay = viewModel::stopAgentModeDisplay,
                     onRefreshAgentModeDisplays = viewModel::refreshAgentModeDisplays,
                     onOpenWebsite = { openExternalUrl(context, AetherWebsiteUrl) },

@@ -840,8 +840,15 @@
     <string name="onboarding_pi_setup_ready">AI 引擎已就绪 · Node %1$s</string>
     <string name="onboarding_pi_setup_failed">AI 引擎配置需要处理</string>
     <string name="onboarding_pi_setup_step">第 %1$d 步，共 %2$d 步</string>
-    <string name="onboarding_pi_setup_working">正在配置 AI 引擎</string>
+    <string name="onboarding_pi_setup_working">正在设置</string>
     <string name="onboarding_pi_setup_node_wait_hint">首次安装 Node.js 需要下载 Alpine 软件包，可能耗时数分钟。请保持 Aether 在前台。</string>
+    <string name="onboarding_pi_setup_details">详情</string>
+    <string name="onboarding_pi_setup_details_title">安装详情</string>
+    <string name="onboarding_pi_setup_output">输出</string>
+    <string name="onboarding_pi_setup_waiting_for_output">正在等待安装输出…</string>
+    <string name="settings_replay_alpine_setup_preview">重放 Alpine Setup 预览</string>
+    <string name="settings_replay_alpine_setup_preview_description">使用模拟输出和等待时间展示 Alpine 与 AI 引擎安装界面，不会修改实际运行环境。</string>
+    <string name="settings_replay_setup_preview">重放安装预览</string>
     <string name="settings_old_command_history_retention_hours">清理旧命令输出</string>
     <string name="settings_old_command_history_retention_hours_description">运行新的 bash 命令时，会清理过期的已结束输出。运行中的命令不受影响。</string>
     <string name="settings_old_command_history_retention_hours_value">输出保留时长</string>

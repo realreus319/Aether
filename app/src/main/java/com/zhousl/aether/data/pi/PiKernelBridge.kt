@@ -4,6 +4,7 @@ import com.zhousl.aether.data.PiExtensionLoadOptions
 import com.zhousl.aether.data.AetherDiagnosticLogger
 import com.zhousl.aether.data.DiagnosticRedactor
 import com.zhousl.aether.runtime.AlpineRuntime
+import com.zhousl.aether.runtime.AlpineSetupActivity
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -68,7 +69,7 @@ class PiKernelBridge(
     private var activeProcess: ActivePiBridgeProcess? = null
 
     suspend fun ping(
-        onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
+        onSetupProgress: (PiCoreSetupUpdate) -> Unit = {},
     ): JSONObject =
         request(
             type = "ping",
@@ -399,7 +400,7 @@ class PiKernelBridge(
         timeoutMillis: Long?,
         onEvent: (suspend (String, JSONObject) -> Unit)? = null,
         abortOnCancellation: Boolean = type == "run_turn" || type == "complete_once" || type == "follow_up",
-        onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
+        onSetupProgress: (PiCoreSetupUpdate) -> Unit = {},
         startIfNeeded: Boolean = true,
     ): JSONObject = withContext(Dispatchers.IO) {
         val id = nextRequestId(type)
@@ -453,7 +454,7 @@ class PiKernelBridge(
                 eventChannel = eventChannel,
                 eventJob = eventJob,
             )
-            onSetupProgress(PiCoreSetupPhase.VerifyingBridge)
+            onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.VerifyingBridge))
             val line = PiBridgeRequest(id = id, type = type, payload = payload).toJsonLine()
             synchronized(requestProcess.writer) {
                 requestProcess.writer.write(line)
@@ -521,7 +522,7 @@ class PiKernelBridge(
     }
 
     private suspend fun ensureStartedLocked(
-        onSetupProgress: (PiCoreSetupPhase) -> Unit = {},
+        onSetupProgress: (PiCoreSetupUpdate) -> Unit = {},
     ): ActivePiBridgeProcess {
         mutex.withLock {
             currentLiveProcess()?.let { return it }
@@ -532,13 +533,13 @@ class PiKernelBridge(
             runCatching { staleProcess?.process?.destroy() }
 
             ensureNodeAvailable(onSetupProgress)
-            onSetupProgress(PiCoreSetupPhase.PreparingBridge)
+            onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.PreparingBridge))
             alpineRuntime.installAsset(
                 assetPath = PiBridgeAssetPath,
                 guestPath = PiBridgeGuestPath,
                 executable = false,
             )
-            onSetupProgress(PiCoreSetupPhase.StartingBridge)
+            onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.StartingBridge))
             val started = alpineRuntime.startManagedProcess(
                 command = "node ${shellQuote(PiBridgeGuestPath)}",
                 workingDirectory = PiBridgeWorkingDirectory,
@@ -576,21 +577,34 @@ class PiKernelBridge(
         }
 
     private suspend fun ensureNodeAvailable(
-        onSetupProgress: (PiCoreSetupPhase) -> Unit,
+        onSetupProgress: (PiCoreSetupUpdate) -> Unit,
     ) {
-        onSetupProgress(PiCoreSetupPhase.CheckingAlpine)
-        val setup = alpineRuntime.initialize()
+        onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.CheckingAlpine))
+        val setup = alpineRuntime.initialize { progress ->
+            onSetupProgress(
+                PiCoreSetupUpdate(
+                    phase = PiCoreSetupPhase.CheckingAlpine,
+                    activity = when (progress.activity) {
+                        AlpineSetupActivity.Extracting -> PiCoreSetupActivity.Extracting
+                        AlpineSetupActivity.Downloading -> PiCoreSetupActivity.Downloading
+                        AlpineSetupActivity.None -> PiCoreSetupActivity.None
+                    },
+                    bytesPerSecond = progress.bytesPerSecond,
+                    output = progress.output,
+                )
+            )
+        }
         if (!setup.isReady) {
             throw PiBridgeException(
                 setup.detail.ifBlank { "Alpine runtime is not ready for the Pi bridge." },
                 code = "alpine_not_ready",
             )
         }
-        onSetupProgress(PiCoreSetupPhase.CheckingNode)
+        onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.CheckingNode))
         val version = readNodeVersion()
         if (version != null && compareSemver(version, PiBridgeNodeMinVersion) >= 0) return
 
-        onSetupProgress(PiCoreSetupPhase.InstallingNode)
+        onSetupProgress(PiCoreSetupUpdate(PiCoreSetupPhase.InstallingNode))
         diagnosticLogger.event(
             category = "pi_bridge",
             event = "node_profile_install_start",
@@ -600,7 +614,16 @@ class PiKernelBridge(
                 "required_version" to PiBridgeNodeMinVersion,
             ),
         )
-        val installState = alpineRuntime.installPackageProfile("node")
+        val installState = alpineRuntime.installPackageProfile("node") { progress ->
+            onSetupProgress(
+                PiCoreSetupUpdate(
+                    phase = PiCoreSetupPhase.InstallingNode,
+                    activity = PiCoreSetupActivity.Downloading,
+                    bytesPerSecond = progress.bytesPerSecond,
+                    output = progress.output,
+                )
+            )
+        }
         if (!installState.isReady) {
             throw PiBridgeException(
                 installState.detail.ifBlank { "Failed to install Node.js inside Alpine." },

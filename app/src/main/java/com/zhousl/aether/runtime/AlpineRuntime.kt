@@ -1,6 +1,7 @@
 package com.zhousl.aether.runtime
 
 import android.content.Context
+import android.net.TrafficStats
 import android.os.Build
 import com.zhousl.aether.data.AetherDiagnosticLogger
 import com.zhousl.aether.data.AlpineEnvironmentVariable
@@ -93,7 +94,9 @@ class AlpineRuntime(
         environmentVariables = normalizeAlpineEnvironmentVariables(variables)
     }
 
-    suspend fun initialize(): LocalRuntimeSetupState = withContext(Dispatchers.IO) {
+    suspend fun initialize(
+        onProgress: (AlpineSetupProgress) -> Unit = {},
+    ): LocalRuntimeSetupState = withContext(Dispatchers.IO) {
         inspectSetup().let { state ->
             if (state.issue != LocalRuntimeIssue.NotInstalled &&
                 state.issue != LocalRuntimeIssue.MissingAssets
@@ -110,7 +113,7 @@ class AlpineRuntime(
             )
         }
         runCatching {
-            installFromAssets()
+            installFromAssets(onProgress)
         }.fold(
             onSuccess = {
                 inspectSetup().let { state ->
@@ -205,7 +208,10 @@ class AlpineRuntime(
         }
     }
 
-    suspend fun installPackageProfile(profileId: String): LocalRuntimeSetupState {
+    suspend fun installPackageProfile(
+        profileId: String,
+        onProgress: (AlpineSetupProgress) -> Unit = {},
+    ): LocalRuntimeSetupState {
         val packages = AlpinePackageProfiles[profileId]
             ?: return LocalRuntimeSetupState(
                 runtimeId = id,
@@ -220,7 +226,40 @@ class AlpineRuntime(
                 issue = LocalRuntimeIssue.Failed,
                 detail = "Unknown Alpine package profile: $profileId",
             )
-        val result = JSONObject(executeCommand(command, homeDirectory, 10 * 60 * 1000L))
+        onProgress(
+            AlpineSetupProgress(
+                activity = AlpineSetupActivity.Downloading,
+                output = "\$ $command\n",
+            )
+        )
+        val rateSampler = NetworkRateSampler { bytesPerSecond ->
+            onProgress(
+                AlpineSetupProgress(
+                    activity = AlpineSetupActivity.Downloading,
+                    bytesPerSecond = bytesPerSecond,
+                )
+            )
+        }
+        rateSampler.start()
+        val result = try {
+            JSONObject(
+                executeCommand(
+                    command = command,
+                    workingDirectory = homeDirectory,
+                    awaitTimeoutMillis = 10 * 60 * 1000L,
+                    onOutput = { output ->
+                        onProgress(
+                            AlpineSetupProgress(
+                                activity = AlpineSetupActivity.Downloading,
+                                output = output,
+                            )
+                        )
+                    },
+                )
+            )
+        } finally {
+            rateSampler.stop()
+        }
         return if (result.optBoolean("ok") || verifyPackageProfile(profileId)) {
             LocalRuntimeSetupState(
                 runtimeId = id,
@@ -575,7 +614,10 @@ class AlpineRuntime(
             appContext.assets.open(path).use { true }
         }.getOrDefault(false)
 
-    private fun installFromAssets() {
+    private fun installFromAssets(
+        onProgress: (AlpineSetupProgress) -> Unit,
+    ) {
+        onProgress(AlpineSetupProgress(output = "Preparing Alpine runtime files...\n"))
         val stagingRoot = File(runtimeRoot.parentFile, "alpine-installing").apply {
             deleteRecursively()
             mkdirs()
@@ -587,16 +629,23 @@ class AlpineRuntime(
         File(stagingRoot, "workspace").mkdirs()
         File(stagingRoot, "tmp").mkdirs()
 
+        onProgress(AlpineSetupProgress(output = "Copying proot runtime...\n"))
         copyAsset("$AlpineAssetRoot/proot.bin", File(stagingBin, "proot"), executable = true)
         copyAsset("$AlpineAssetRoot/loader.bin", File(stagingLoader, "loader"), executable = true)
         copyAsset("$AlpineAssetRoot/libtalloc.so.2", File(stagingLib, "libtalloc.so.2"), executable = false)
         val rootfsAsset = AlpineRootfsAssetCandidates.firstOrNull { assetExists(it.path) }
             ?: error("Alpine rootfs asset is missing.")
+        onProgress(
+            AlpineSetupProgress(
+                activity = AlpineSetupActivity.Extracting,
+                output = "Extracting ${rootfsAsset.path}...\n",
+            )
+        )
         appContext.assets.open(rootfsAsset.path).use { stream ->
             if (rootfsAsset.compressed) {
-                extractTarGz(stream, stagingRootfs)
+                extractTarGz(stream, stagingRootfs, onProgress)
             } else {
-                extractTar(stream, stagingRootfs)
+                extractTar(stream, stagingRootfs, onProgress)
             }
         }
         File(stagingRoot, ".installed-version").writeText("alpine-3.23.4-aarch64\n")
@@ -608,6 +657,7 @@ class AlpineRuntime(
         }
         ensureWorkspace()
         ensureGuestNetworkConfig()
+        onProgress(AlpineSetupProgress(output = "Alpine runtime files are ready.\n"))
     }
 
     private fun copyAsset(
@@ -638,14 +688,17 @@ class AlpineRuntime(
     private fun extractTarGz(
         stream: InputStream,
         targetDirectory: File,
+        onProgress: (AlpineSetupProgress) -> Unit,
     ) {
-        GZIPInputStream(stream).use { gzip -> extractTar(gzip, targetDirectory) }
+        GZIPInputStream(stream).use { gzip -> extractTar(gzip, targetDirectory, onProgress) }
     }
 
     private fun extractTar(
         stream: InputStream,
         targetDirectory: File,
+        onProgress: (AlpineSetupProgress) -> Unit,
     ) {
+        val progressReporter = ExtractionProgressReporter(onProgress)
         stream.use { tar ->
             val header = ByteArray(512)
             while (true) {
@@ -672,9 +725,10 @@ class AlpineRuntime(
 
                 when (type) {
                     '0', '\u0000' -> {
+                        progressReporter.onEntry(path)
                         target.parentFile?.mkdirs()
                         target.outputStream().use { output ->
-                            tar.copyExactlyTo(output, size)
+                            tar.copyExactlyTo(output, size, progressReporter::onBytes)
                         }
                         target.applyTarMode(mode)
                     }
@@ -701,6 +755,7 @@ class AlpineRuntime(
                 tar.skipPadding(size)
             }
         }
+        progressReporter.finish()
     }
 
     private fun InputStream.readFullyOrEnd(buffer: ByteArray): Int {
@@ -716,6 +771,7 @@ class AlpineRuntime(
     private fun InputStream.copyExactlyTo(
         output: java.io.OutputStream,
         byteCount: Long,
+        onBytesCopied: (Int) -> Unit = {},
     ) {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         var remaining = byteCount
@@ -723,6 +779,7 @@ class AlpineRuntime(
             val read = read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
             if (read == -1) error("Unexpected end of Alpine rootfs tar entry.")
             output.write(buffer, 0, read)
+            onBytesCopied(read)
             remaining -= read
         }
     }
@@ -971,6 +1028,97 @@ class AlpineRuntime(
             "ssh" to listOf("openssh-client"),
         )
     }
+
+    private class ExtractionProgressReporter(
+        private val onProgress: (AlpineSetupProgress) -> Unit,
+    ) {
+        private var totalBytes = 0L
+        private var sampledBytes = 0L
+        private var sampledAtMillis = System.currentTimeMillis()
+        private var lastEntryAtMillis = 0L
+
+        fun onEntry(path: String) {
+            val now = System.currentTimeMillis()
+            if (lastEntryAtMillis == 0L || now - lastEntryAtMillis >= 120L) {
+                lastEntryAtMillis = now
+                onProgress(
+                    AlpineSetupProgress(
+                        activity = AlpineSetupActivity.Extracting,
+                        output = "Extracting $path\n",
+                    )
+                )
+            }
+        }
+
+        fun onBytes(byteCount: Int) {
+            totalBytes += byteCount
+            val now = System.currentTimeMillis()
+            val elapsed = now - sampledAtMillis
+            if (elapsed < 400L) return
+            val bytesPerSecond = ((totalBytes - sampledBytes) * 1_000L / elapsed).coerceAtLeast(0L)
+            sampledBytes = totalBytes
+            sampledAtMillis = now
+            onProgress(
+                AlpineSetupProgress(
+                    activity = AlpineSetupActivity.Extracting,
+                    bytesPerSecond = bytesPerSecond,
+                )
+            )
+        }
+
+        fun finish() {
+            val megabytes = totalBytes / (1024L * 1024L)
+            onProgress(
+                AlpineSetupProgress(
+                    activity = AlpineSetupActivity.Extracting,
+                    output = "Finished extracting the Alpine root filesystem ($megabytes MB).\n",
+                )
+            )
+        }
+    }
+
+    private class NetworkRateSampler(
+        private val onRate: (Long) -> Unit,
+    ) {
+        @Volatile
+        private var running = false
+        private var thread: Thread? = null
+
+        fun start() {
+            val initialBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
+            if (initialBytes == TrafficStats.UNSUPPORTED.toLong()) return
+            running = true
+            thread = Thread(
+                {
+                    var previousBytes = initialBytes
+                    var previousAtMillis = System.currentTimeMillis()
+                    runCatching {
+                        while (running) {
+                            Thread.sleep(500L)
+                            val now = System.currentTimeMillis()
+                            val currentBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
+                            val elapsed = now - previousAtMillis
+                            if (currentBytes >= previousBytes && elapsed > 0L) {
+                                onRate((currentBytes - previousBytes) * 1_000L / elapsed)
+                            }
+                            previousBytes = currentBytes
+                            previousAtMillis = now
+                        }
+                    }
+                },
+                "aether-alpine-download-rate",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        fun stop() {
+            running = false
+            thread?.interrupt()
+            thread = null
+        }
+    }
 }
 
 private data class RootfsAsset(
@@ -983,6 +1131,18 @@ data class AlpineTerminalLaunchSpec(
     val arguments: Array<String>,
     val environment: Array<String>,
     val workingDirectory: String,
+)
+
+enum class AlpineSetupActivity {
+    None,
+    Extracting,
+    Downloading,
+}
+
+data class AlpineSetupProgress(
+    val activity: AlpineSetupActivity = AlpineSetupActivity.None,
+    val bytesPerSecond: Long = 0L,
+    val output: String = "",
 )
 
 internal data class AlpineWorkspaceHostPath(

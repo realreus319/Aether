@@ -518,6 +518,7 @@ fun SettingsScreen(
     onInstallShizuku: () -> Unit,
     onReplayOnboarding: () -> Unit,
     onReplayFollowUpOnboarding: () -> Unit,
+    onReplayAlpineSetupPreview: () -> Unit,
     onStopAgentModeDisplay: () -> Unit,
     onRefreshAgentModeDisplays: (AgentModeAuthorizationMethod) -> Unit,
     onOpenWebsite: () -> Unit,
@@ -1247,6 +1248,7 @@ fun SettingsScreen(
             SettingsPage.Developer -> DeveloperSettingsPage(
                 title = stringResource(R.string.settings_developer),
                 onReplayFollowUpOnboarding = ::persistAndReplayFollowUpOnboarding,
+                onReplayAlpineSetupPreview = onReplayAlpineSetupPreview,
                 onImportAppData = onImportAppData,
                 onExportAppData = onExportAppData,
                 onExportLogs = onExportLogs,
@@ -6152,6 +6154,7 @@ private fun AgentModeAuthorizationNotice(
 private fun DeveloperSettingsPage(
     title: String,
     onReplayFollowUpOnboarding: () -> Unit,
+    onReplayAlpineSetupPreview: () -> Unit,
     onImportAppData: () -> Unit,
     onExportAppData: () -> Unit,
     onExportLogs: () -> Unit,
@@ -6197,6 +6200,30 @@ private fun DeveloperSettingsPage(
                 SettingsSubtleActionButton(
                     label = stringResource(R.string.settings_export_app_data),
                     onClick = onExportAppData,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        SettingsCardGroup {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.settings_replay_alpine_setup_preview),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = AetherOnSurface,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = stringResource(R.string.settings_replay_alpine_setup_preview_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AetherOnSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                SettingsSubtleActionButton(
+                    label = stringResource(R.string.settings_replay_setup_preview),
+                    onClick = onReplayAlpineSetupPreview,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

@@ -67,8 +67,10 @@ import com.zhousl.aether.data.LlmMessage
 import com.zhousl.aether.data.LlmTextPart
 import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.pi.PiCompletionClient
+import com.zhousl.aether.data.pi.PiCoreSetupActivity
 import com.zhousl.aether.data.pi.PiCoreSetupPhase
 import com.zhousl.aether.data.pi.PiCoreSetupState
+import com.zhousl.aether.data.pi.PiCoreSetupUpdate
 import com.zhousl.aether.data.pi.PiProviderAuthState
 import com.zhousl.aether.data.pi.toProviderPayloadJson
 import com.zhousl.aether.data.pi.toPiOAuthPrompt
@@ -89,6 +91,7 @@ import com.zhousl.aether.data.resolveStoredOrAutomaticModelKey
 import com.zhousl.aether.termux.TermuxSetupIssue
 import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.runtime.AlpineTerminalLaunchSpec
+import com.zhousl.aether.runtime.AlpineSetupActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -111,6 +114,7 @@ private const val FollowUpTourAutoOpenDelayMillis = 2_500L
 private const val AppUpdateCheckIntervalMillis = 3L * 24L * 60L * 60L * 1000L
 private const val UpdateChannelNightly = "nightly"
 private const val LogcatReadTimeoutSeconds = 4L
+private const val MaxSetupOutputChars = 48_000
 private const val SessionTitleSystemPrompt =
     "Generate a concise chat title for this conversation. Return only the title, in the user's language when possible, with no quotes, no emoji, and at most 6 words."
 private const val CompactCommand = "/compact"
@@ -154,6 +158,7 @@ class AetherViewModel(
     private var selectSessionJob: Job? = null
     private var providerAuthJob: Job? = null
     private var extensionSendHookJob: Job? = null
+    private var developerAlpineSetupPreviewJob: Job? = null
 
     val uiState: StateFlow<AetherUiState> = _uiState.asStateFlow()
     val transientMessages = _transientMessages.asSharedFlow()
@@ -529,8 +534,30 @@ class AetherViewModel(
 
     fun initializeAlpineRuntime(makeDefault: Boolean = true) {
         viewModelScope.launch {
+            _uiState.update { current ->
+                current.copy(
+                    piCoreSetupState = PiCoreSetupState(
+                        isChecking = true,
+                        phase = PiCoreSetupPhase.CheckingAlpine,
+                        output = "Starting Alpine setup...\n",
+                    )
+                )
+            }
             val setupState = withContext(Dispatchers.IO) {
-                runtime.alpineRuntime.initialize()
+                runtime.alpineRuntime.initialize { progress ->
+                    applyPiCoreSetupUpdate(
+                        PiCoreSetupUpdate(
+                            phase = PiCoreSetupPhase.CheckingAlpine,
+                            activity = when (progress.activity) {
+                                AlpineSetupActivity.Extracting -> PiCoreSetupActivity.Extracting
+                                AlpineSetupActivity.Downloading -> PiCoreSetupActivity.Downloading
+                                AlpineSetupActivity.None -> PiCoreSetupActivity.None
+                            },
+                            bytesPerSecond = progress.bytesPerSecond,
+                            output = progress.output,
+                        )
+                    )
+                }
             }
             if (setupState.isReady) {
                 settingsRepository.updateSettings(
@@ -543,6 +570,23 @@ class AetherViewModel(
             _uiState.update { current -> current.copy(alpineSetupState = setupState) }
             if (setupState.isReady) {
                 refreshPiCoreSetup()
+            } else {
+                _uiState.update { current ->
+                    current.copy(
+                        piCoreSetupState = current.piCoreSetupState.copy(
+                            isChecking = false,
+                            phase = PiCoreSetupPhase.Failed,
+                            failedAtPhase = PiCoreSetupPhase.CheckingAlpine,
+                            detail = setupState.detail,
+                            activity = PiCoreSetupActivity.None,
+                            bytesPerSecond = 0L,
+                            output = appendSetupOutput(
+                                current.piCoreSetupState.output,
+                                "Setup failed: ${setupState.detail}\n",
+                            ),
+                        )
+                    )
+                }
             }
             emitTransientMessage(UiText.Raw(setupState.detail.ifBlank { "Alpine runtime status refreshed." }))
         }
@@ -555,21 +599,13 @@ class AetherViewModel(
                 piCoreSetupState = PiCoreSetupState(
                     isChecking = true,
                     phase = PiCoreSetupPhase.CheckingAlpine,
+                    output = it.piCoreSetupState.output.ifBlank { "Starting agent runtime setup...\n" },
                 )
             )
         }
         runCatching {
             withContext(Dispatchers.IO) {
-                runtime.piKernelBridge.ping { phase ->
-                    _uiState.update { current ->
-                        current.copy(
-                            piCoreSetupState = current.piCoreSetupState.copy(
-                                isChecking = true,
-                                phase = phase,
-                            )
-                        )
-                    }
-                }
+                runtime.piKernelBridge.ping(::applyPiCoreSetupUpdate)
             }
         }.fold(
             onSuccess = { payload ->
@@ -580,6 +616,10 @@ class AetherViewModel(
                             phase = PiCoreSetupPhase.Ready,
                             nodeVersion = payload.optString("node_version"),
                             bridgeVersion = payload.optString("bridge_version"),
+                            output = appendSetupOutput(
+                                it.piCoreSetupState.output,
+                                "AI engine setup complete.\n",
+                            ),
                         )
                     )
                 }
@@ -592,6 +632,10 @@ class AetherViewModel(
                             phase = PiCoreSetupPhase.Failed,
                             failedAtPhase = current.piCoreSetupState.phase,
                             detail = throwable.userFacingMessage(),
+                            output = appendSetupOutput(
+                                current.piCoreSetupState.output,
+                                "Setup failed: ${throwable.userFacingMessage()}\n",
+                            ),
                         )
                     )
                 }
@@ -923,6 +967,102 @@ class AetherViewModel(
         }
     }
 
+    fun openDeveloperAlpineSetupPreview() {
+        _uiState.update { current ->
+            current.copy(
+                currentScreen = AppScreen.Onboarding,
+                isOnboardingReplay = true,
+                onboardingStep = OnboardingStep.AlpineSetup,
+                onboardingReturnScreen = AppScreen.Settings,
+                developerAlpineSetupPreviewState = PiCoreSetupState(),
+            )
+        }
+    }
+
+    fun restartDeveloperAlpineSetupPreview() {
+        developerAlpineSetupPreviewJob?.cancel()
+        _uiState.update { current ->
+            if (current.developerAlpineSetupPreviewState == null) {
+                current
+            } else {
+                current.copy(developerAlpineSetupPreviewState = PiCoreSetupState())
+            }
+        }
+        developerAlpineSetupPreviewJob = viewModelScope.launch {
+            fun update(
+                phase: PiCoreSetupPhase,
+                activity: PiCoreSetupActivity = PiCoreSetupActivity.None,
+                bytesPerSecond: Long = 0L,
+                output: String = "",
+            ) {
+                _uiState.update { current ->
+                    val preview = current.developerAlpineSetupPreviewState ?: return@update current
+                    current.copy(
+                        developerAlpineSetupPreviewState = preview.copy(
+                            isChecking = phase != PiCoreSetupPhase.Ready && phase != PiCoreSetupPhase.Failed,
+                            isReady = phase == PiCoreSetupPhase.Ready,
+                            phase = phase,
+                            activity = activity,
+                            bytesPerSecond = bytesPerSecond,
+                            output = appendSetupOutput(preview.output, output),
+                            nodeVersion = if (phase == PiCoreSetupPhase.Ready) "22.21.1" else preview.nodeVersion,
+                            bridgeVersion = if (phase == PiCoreSetupPhase.Ready) "2.0.0-alpha.0" else preview.bridgeVersion,
+                        )
+                    )
+                }
+            }
+
+            update(PiCoreSetupPhase.CheckingAlpine, output = "Starting Alpine setup preview...\n")
+            delay(700L)
+            val extractionEntries = listOf(
+                "bin/busybox",
+                "etc/alpine-release",
+                "usr/lib/libcrypto.so.3",
+                "usr/bin/env",
+                "var/lib/apk/world",
+            )
+            extractionEntries.forEachIndexed { index, path ->
+                update(
+                    phase = PiCoreSetupPhase.CheckingAlpine,
+                    activity = PiCoreSetupActivity.Extracting,
+                    bytesPerSecond = (18L + index * 3L) * 1024L * 1024L,
+                    output = "Extracting $path\n",
+                )
+                delay(1_600L)
+            }
+            update(
+                phase = PiCoreSetupPhase.CheckingNode,
+                output = "Alpine root filesystem ready.\nChecking node --version...\n",
+            )
+            delay(1_000L)
+            val apkLines = listOf(
+                "\$ apk add --no-cache --no-chown nodejs npm",
+                "fetch https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/APKINDEX.tar.gz",
+                "(1/8) Installing ca-certificates",
+                "(2/8) Installing libuv",
+                "(7/8) Installing nodejs",
+                "(8/8) Installing npm",
+                "OK: 94 MiB in 32 packages",
+            )
+            apkLines.forEachIndexed { index, line ->
+                update(
+                    phase = PiCoreSetupPhase.InstallingNode,
+                    activity = PiCoreSetupActivity.Downloading,
+                    bytesPerSecond = (2_400L + index * 370L) * 1024L,
+                    output = "$line\n",
+                )
+                delay(1_400L)
+            }
+            update(PiCoreSetupPhase.PreparingBridge, output = "Preparing the AI engine bridge...\n")
+            delay(900L)
+            update(PiCoreSetupPhase.StartingBridge, output = "Starting node bridge.mjs...\n")
+            delay(900L)
+            update(PiCoreSetupPhase.VerifyingBridge, output = "Verifying bridge response...\n")
+            delay(900L)
+            update(PiCoreSetupPhase.Ready, output = "AI engine setup complete.\n")
+        }
+    }
+
     fun resumeOnboarding() {
         _uiState.update { current ->
             current.copy(
@@ -935,13 +1075,43 @@ class AetherViewModel(
     }
 
     fun closeOnboarding() {
+        developerAlpineSetupPreviewJob?.cancel()
+        developerAlpineSetupPreviewJob = null
         _uiState.update { current ->
             current.copy(
                 currentScreen = current.onboardingReturnScreen,
                 isOnboardingReplay = false,
                 onboardingStep = OnboardingStep.Landing,
                 onboardingReturnScreen = AppScreen.Chat,
+                developerAlpineSetupPreviewState = null,
             )
+        }
+    }
+
+    private fun applyPiCoreSetupUpdate(update: PiCoreSetupUpdate) {
+        _uiState.update { current ->
+            current.copy(
+                piCoreSetupState = current.piCoreSetupState.copy(
+                    isChecking = true,
+                    phase = update.phase,
+                    activity = update.activity,
+                    bytesPerSecond = update.bytesPerSecond,
+                    output = appendSetupOutput(current.piCoreSetupState.output, update.output),
+                )
+            )
+        }
+    }
+
+    private fun appendSetupOutput(
+        current: String,
+        addition: String,
+    ): String {
+        if (addition.isEmpty()) return current
+        val combined = current + addition
+        return if (combined.length <= MaxSetupOutputChars) {
+            combined
+        } else {
+            combined.takeLast(MaxSetupOutputChars)
         }
     }
 

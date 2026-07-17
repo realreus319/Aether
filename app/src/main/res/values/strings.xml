@@ -842,8 +842,15 @@
     <string name="onboarding_pi_setup_ready">AI engine ready · Node %1$s</string>
     <string name="onboarding_pi_setup_failed">AI engine setup needs attention</string>
     <string name="onboarding_pi_setup_step">Step %1$d of %2$d</string>
-    <string name="onboarding_pi_setup_working">Setting up the AI engine</string>
+    <string name="onboarding_pi_setup_working">Setting up</string>
     <string name="onboarding_pi_setup_node_wait_hint">The first Node.js install downloads Alpine packages and may take several minutes. Keep Aether open.</string>
+    <string name="onboarding_pi_setup_details">Details</string>
+    <string name="onboarding_pi_setup_details_title">Setup details</string>
+    <string name="onboarding_pi_setup_output">Output</string>
+    <string name="onboarding_pi_setup_waiting_for_output">Waiting for setup output…</string>
+    <string name="settings_replay_alpine_setup_preview">Replay Alpine Setup preview</string>
+    <string name="settings_replay_alpine_setup_preview_description">Shows the Alpine and AI engine setup UI with simulated output and timing. No runtime data is changed.</string>
+    <string name="settings_replay_setup_preview">Replay setup preview</string>
     <string name="settings_old_command_history_retention_hours">Clean up old command output</string>
     <string name="settings_old_command_history_retention_hours_description">Expired completed output is cleaned up when starting new bash commands. Running commands are unaffected.</string>
     <string name="settings_old_command_history_retention_hours_value">Keep output for</string>

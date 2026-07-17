@@ -276,6 +276,7 @@ data class AetherUiState(
     val isFetchingModels: Boolean = false,
     val providerAuthState: PiProviderAuthState = PiProviderAuthState(),
     val piCoreSetupState: PiCoreSetupState = PiCoreSetupState(),
+    val developerAlpineSetupPreviewState: PiCoreSetupState? = null,
     val showStarterPromptHint: Boolean = false,
     val awaitingFollowUpTour: Boolean = false,
     val showFollowUpTourCard: Boolean = false,

@@ -48,6 +48,19 @@ enum class PiCoreSetupPhase(
     Failed(step = 0),
 }
 
+enum class PiCoreSetupActivity {
+    None,
+    Extracting,
+    Downloading,
+}
+
+data class PiCoreSetupUpdate(
+    val phase: PiCoreSetupPhase,
+    val activity: PiCoreSetupActivity = PiCoreSetupActivity.None,
+    val bytesPerSecond: Long = 0L,
+    val output: String = "",
+)
+
 data class PiCoreSetupState(
     val isChecking: Boolean = false,
     val isReady: Boolean = false,
@@ -56,6 +69,9 @@ data class PiCoreSetupState(
     val detail: String = "",
     val nodeVersion: String = "",
     val bridgeVersion: String = "",
+    val activity: PiCoreSetupActivity = PiCoreSetupActivity.None,
+    val bytesPerSecond: Long = 0L,
+    val output: String = "",
 )
 
 fun JSONObject.toPiOAuthPrompt(): PiOAuthPrompt = PiOAuthPrompt(

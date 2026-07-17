@@ -30,6 +30,7 @@ import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -2749,11 +2750,17 @@ private fun Modifier.noRippleClickable(
 }
 
 @Composable
-private fun SyntaxHighlightedCodeBlock(
+internal fun SyntaxHighlightedCodeBlock(
     label: String,
     content: AnnotatedString,
+    modifier: Modifier = Modifier,
+    maxHeight: Dp = 220.dp,
+    scrollState: ScrollState = rememberScrollState(),
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
@@ -2766,8 +2773,8 @@ private fun SyntaxHighlightedCodeBlock(
                     .clip(RoundedCornerShape(16.dp))
                     .background(AetherSurfaceHigh)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .heightIn(max = 220.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(scrollState),
             ) {
                 Text(
                     text = content,
@@ -4391,7 +4398,7 @@ private fun parseJsonObject(rawValue: String): JSONObject? {
 private fun JSONObject.optionalInt(vararg keys: String): Int? =
     keys.firstOrNull { has(it) && !isNull(it) }?.let { optInt(it) }
 
-private fun highlightBashCommand(command: String): AnnotatedString = buildAnnotatedString {
+internal fun highlightBashCommand(command: String): AnnotatedString = buildAnnotatedString {
     appendStyled("$ ", SpanStyle(color = AetherSecondary, fontWeight = FontWeight.SemiBold))
 
     val tokenPattern = Regex("""\s+|&&|\|\||[|;><()]|"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\$[A-Za-z_][A-Za-z0-9_]*|--?[A-Za-z0-9][\w-]*|[^\s|;><()]+""")
@@ -4420,7 +4427,7 @@ private fun highlightBashCommand(command: String): AnnotatedString = buildAnnota
     }
 }
 
-private fun highlightToolResult(result: String): AnnotatedString = buildAnnotatedString {
+internal fun highlightToolResult(result: String): AnnotatedString = buildAnnotatedString {
     val tokenPattern = Regex("""\s+|~?/[\w./-]+|\b\d+\b|[A-Za-z_][A-Za-z0-9_]*:|[^\s]+""")
 
     tokenPattern.findAll(result).forEach { match ->
@@ -4431,12 +4438,27 @@ private fun highlightToolResult(result: String): AnnotatedString = buildAnnotate
             lowerToken.contains("error") ||
                 lowerToken.contains("failed") ||
                 lowerToken.contains("denied") -> SpanStyle(color = AetherError, fontWeight = FontWeight.Medium)
-            token.startsWith("/") || token.startsWith("~/") -> SpanStyle(color = AetherSecondary)
+            lowerToken.startsWith("http://") ||
+                lowerToken.startsWith("https://") ||
+                token.startsWith("/") ||
+                token.startsWith("~/") ||
+                token.contains("/") -> SpanStyle(color = AetherSecondary)
             token.all(Char::isDigit) -> SpanStyle(color = AetherTertiary)
             token.endsWith(":") -> SpanStyle(color = AetherOnSurfaceVariant, fontWeight = FontWeight.Medium)
             else -> SpanStyle(color = AetherOnSurface)
         }
         appendStyled(token, style)
+    }
+}
+
+internal fun highlightTerminalTranscript(result: String): AnnotatedString = buildAnnotatedString {
+    result.lineSequence().forEachIndexed { index, line ->
+        if (index > 0) append('\n')
+        if (line.startsWith("$ ")) {
+            append(highlightBashCommand(line.removePrefix("$ ")))
+        } else {
+            append(highlightToolResult(line))
+        }
     }
 }
 

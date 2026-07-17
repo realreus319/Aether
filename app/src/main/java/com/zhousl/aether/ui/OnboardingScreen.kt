@@ -6,6 +6,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,6 +14,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -41,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Key
@@ -54,6 +58,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,6 +88,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.zhousl.aether.data.AgentModeAuthorizationMethod
 import com.zhousl.aether.data.AutomaticModelPurpose
 import com.zhousl.aether.data.LlmProviderConfig
@@ -98,6 +104,7 @@ import com.zhousl.aether.runtime.LocalRuntimeIssue
 import com.zhousl.aether.runtime.LocalRuntimeSetupState
 import com.zhousl.aether.data.pi.PiCoreSetupPhase
 import com.zhousl.aether.data.pi.PiCoreSetupState
+import com.zhousl.aether.data.pi.PiCoreSetupActivity
 import com.zhousl.aether.data.pi.PiProviderAuthState
 import com.zhousl.aether.termux.TermuxSetupIssue
 import com.zhousl.aether.termux.TermuxSetupState
@@ -115,6 +122,7 @@ import com.zhousl.aether.ui.theme.AetherSurfaceHigh
 import com.zhousl.aether.ui.theme.AetherTertiary
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 private const val StepFadeDuration = 560
 private const val MessageTravelDuration = 1_520
@@ -184,6 +192,7 @@ fun OnboardingScreen(
     tavilyApiKey: String,
     installedSkillCount: Int,
     mcpServerCount: Int,
+    setupPreviewMode: Boolean = false,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
     onStartProviderLogin: (String, String, ProviderAuthMethod, String) -> Unit,
     onSubmitProviderAuthPrompt: (String, String, Boolean) -> Unit,
@@ -218,7 +227,8 @@ fun OnboardingScreen(
         mutableStateOf<OnboardingStep?>(null)
     }
     val isInitialFlow = initialStep == OnboardingStep.Landing ||
-        initialStep == OnboardingStep.ProviderSetup
+        initialStep == OnboardingStep.ProviderSetup ||
+        initialStep == OnboardingStep.AlpineSetup
     val steps = remember(initialStep) {
         if (isInitialFlow) InitialOnboardingSteps else FollowUpOnboardingSteps
     }
@@ -301,20 +311,28 @@ fun OnboardingScreen(
                 piCoreSetupState = piCoreSetupState,
                 required = isInitialFlow,
                 onBack = {
-                    currentStep = if (isInitialFlow) {
-                        OnboardingStep.Landing
+                    if (setupPreviewMode) {
+                        onClose()
                     } else {
-                        OnboardingStep.LocalRuntimeChoice
+                        currentStep = if (isInitialFlow) {
+                        OnboardingStep.Landing
+                        } else {
+                            OnboardingStep.LocalRuntimeChoice
+                        }
                     }
                 },
                 onClose = onClose,
                 onInitialize = onInitializeAlpineRuntime,
                 onRefresh = onRefreshAlpineSetup,
                 onContinue = {
-                    currentStep = if (isInitialFlow) {
-                        OnboardingStep.ProviderSetup
+                    if (setupPreviewMode) {
+                        onClose()
                     } else {
-                        OnboardingStep.TavilySetup
+                        currentStep = if (isInitialFlow) {
+                            OnboardingStep.ProviderSetup
+                        } else {
+                            OnboardingStep.TavilySetup
+                        }
                     }
                 },
             )
@@ -1057,7 +1075,11 @@ private fun AlpineRuntimeStep(
                     color = TourTextSecondary,
                 )
             }
-            if (setupState.isReady && (required || piCoreSetupState.phase != PiCoreSetupPhase.Idle)) {
+            if (
+                piCoreSetupState.isChecking ||
+                piCoreSetupState.output.isNotBlank() ||
+                setupState.isReady && (required || piCoreSetupState.phase != PiCoreSetupPhase.Idle)
+            ) {
                 PiCoreSetupProgress(piCoreSetupState)
             }
             when (setupState.issue) {
@@ -1101,8 +1123,14 @@ private fun AlpineRuntimeStep(
 
                 else -> if (required) {
                     TourActionRow(
-                        primaryLabel = stringResource(R.string.settings_initialize),
-                        onPrimary = onInitialize,
+                        primaryLabel = if (piCoreSetupState.isChecking) {
+                            stringResource(R.string.onboarding_pi_setup_working)
+                        } else {
+                            stringResource(R.string.settings_initialize)
+                        },
+                        onPrimary = if (piCoreSetupState.isChecking) onRefresh else onInitialize,
+                        primaryEnabled = !piCoreSetupState.isChecking,
+                        primaryLoading = piCoreSetupState.isChecking,
                         secondaryLabel = stringResource(R.string.common_back),
                         onSecondary = onBack,
                     )
@@ -1123,12 +1151,21 @@ private fun AlpineRuntimeStep(
 private fun PiCoreSetupProgress(
     setupState: PiCoreSetupState,
 ) {
+    var showDetails by rememberSaveable { mutableStateOf(false) }
     val stepCount = 5
     val currentStep = if (setupState.phase == PiCoreSetupPhase.Failed) {
         setupState.failedAtPhase.step
     } else {
         setupState.phase.step
     }.coerceIn(0, stepCount)
+    val animatedProgress by animateFloatAsState(
+        targetValue = currentStep.toFloat() / stepCount,
+        animationSpec = tween(
+            durationMillis = 700,
+            easing = TourEasing,
+        ),
+        label = "pi_core_setup_progress",
+    )
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1137,19 +1174,17 @@ private fun PiCoreSetupProgress(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        Text(
+            text = piCoreSetupStatusText(setupState),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (setupState.phase == PiCoreSetupPhase.Failed) TourGold else TourTextPrimary,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = piCoreSetupStatusText(setupState),
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (setupState.phase == PiCoreSetupPhase.Failed) TourGold else TourTextPrimary,
-                modifier = Modifier.weight(1f),
-            )
             if (currentStep > 0) {
-                Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = stringResource(
                         R.string.onboarding_pi_setup_step,
@@ -1158,6 +1193,28 @@ private fun PiCoreSetupProgress(
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = TourTextSecondary,
+                )
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                setupRateText(setupState)?.let { rate ->
+                    Text(
+                        text = rate,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TourTextSecondary,
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.onboarding_pi_setup_details),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TourTextSecondary,
+                    modifier = Modifier
+                        .clickable { showDetails = true }
+                        .padding(vertical = 4.dp),
                 )
             }
         }
@@ -1171,7 +1228,7 @@ private fun PiCoreSetupProgress(
             if (currentStep > 0) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(currentStep.toFloat() / stepCount)
+                        .fillMaxWidth(animatedProgress)
                         .height(5.dp)
                         .clip(RoundedCornerShape(3.dp))
                         .background(if (setupState.isReady) TourGreen else TourBlue),
@@ -1191,6 +1248,90 @@ private fun PiCoreSetupProgress(
                 color = TourTextSecondary,
             )
         }
+    }
+    if (showDetails) {
+        SetupDetailsDialog(
+            output = setupState.output,
+            onDismiss = { showDetails = false },
+        )
+    }
+}
+
+@Composable
+private fun SetupDetailsDialog(
+    output: String,
+    onDismiss: () -> Unit,
+) {
+    val scrollState = rememberScrollState()
+    LaunchedEffect(output) {
+        scrollState.scrollTo(scrollState.maxValue)
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = TourSurface,
+            contentColor = TourTextPrimary,
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.onboarding_pi_setup_details_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TourTextPrimary,
+                    )
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = stringResource(R.string.common_close),
+                            tint = TourTextSecondary,
+                        )
+                    }
+                }
+                val terminalOutput = output.ifBlank {
+                    stringResource(R.string.onboarding_pi_setup_waiting_for_output)
+                }
+                SyntaxHighlightedCodeBlock(
+                    label = stringResource(R.string.onboarding_pi_setup_output),
+                    content = remember(terminalOutput) {
+                        highlightTerminalTranscript(terminalOutput)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp),
+                    maxHeight = 420.dp,
+                    scrollState = scrollState,
+                )
+            }
+        }
+    }
+}
+
+private fun setupRateText(setupState: PiCoreSetupState): String? {
+    if (setupState.bytesPerSecond <= 0L) return null
+    if (
+        setupState.activity != PiCoreSetupActivity.Extracting &&
+        setupState.activity != PiCoreSetupActivity.Downloading
+    ) {
+        return null
+    }
+    val bytesPerSecond = setupState.bytesPerSecond.toDouble()
+    return when {
+        bytesPerSecond >= 1024.0 * 1024.0 ->
+            String.format(Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
+        bytesPerSecond >= 1024.0 ->
+            String.format(Locale.US, "%.0f KB/s", bytesPerSecond / 1024.0)
+        else -> String.format(Locale.US, "%.0f B/s", bytesPerSecond)
     }
 }
 
