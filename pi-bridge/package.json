@@ -7,7 +7,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --banner:js=\"import { createRequire as __aetherCreateRequire } from 'node:module';const require = __aetherCreateRequire(import.meta.url);\" --outfile=dist/bridge.mjs && esbuild src/channel-bridge.ts --bundle --platform=node --format=esm --target=node22.19 --packages=external --outfile=dist/channel-bridge.mjs",
+    "build": "esbuild src/bridge.ts --bundle --platform=node --format=esm --target=node22.19 --banner:js=\"import { createRequire as __aetherCreateRequire } from 'node:module';const require = __aetherCreateRequire(import.meta.url);\" --outfile=dist/bridge.mjs && esbuild src/channel-runtime.ts --bundle --platform=node --format=esm --target=node22.19 --outfile=dist/channel-bridge.mjs",
     "check": "tsc --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:ping": "node dist/bridge.mjs --ping"
