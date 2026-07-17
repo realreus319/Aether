@@ -82,9 +82,19 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <provider
+            android:name=".channel.ChannelInitializerProvider"
+            android:authorities="${applicationId}.channels"
+            android:exported="false"
+            android:initOrder="90" />
 
         <service
             android:name=".AetherForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".channel.AetherChannelService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
     </application>
