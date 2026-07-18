@@ -911,4 +911,24 @@
     <string name="settings_native_mod_restart_required">请重启 Aether 以应用 Native Mod 设置。</string>
     <string name="settings_native_mod_enable_next_start">下次启动启用 Native Mod</string>
     <string name="settings_native_mod_disable_next_start">下次以 Native Mod 安全模式启动</string>
+    <string name="settings_channels">消息通道</string>
+    <string name="settings_channels_enabled_count">已启用 %1$d 个</string>
+    <string name="settings_channels_description">将 Aether 连接到外部消息平台。消息会使用与应用内相同的 Agent 会话和工具。</string>
+    <string name="settings_channel_app_id">App ID / Client ID</string>
+    <string name="settings_channel_app_secret">App Secret / Client Secret</string>
+    <string name="settings_channel_bot_id">机器人 ID</string>
+    <string name="settings_channel_bot_secret">机器人密钥</string>
+    <string name="settings_channel_bot_token">机器人 Token</string>
+    <string name="settings_channel_base_url">连接地址</string>
+    <string name="settings_channel_access">访问控制</string>
+    <string name="settings_channel_access_open">公开</string>
+    <string name="settings_channel_access_allow_list">白名单</string>
+    <string name="settings_channel_access_disabled">禁止</string>
+    <string name="settings_channel_allowed_users">允许的用户 ID（每行一个）</string>
+    <string name="settings_channel_save">保存通道</string>
+    <string name="settings_channel_status_disabled">未启用</string>
+    <string name="settings_channel_status_starting">正在连接…</string>
+    <string name="settings_channel_status_connected">已连接</string>
+    <string name="settings_channel_status_reconnecting">正在重连…</string>
+    <string name="settings_channel_status_error">连接错误</string>
 </resources>

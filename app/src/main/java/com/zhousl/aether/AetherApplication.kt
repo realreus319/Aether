@@ -28,6 +28,8 @@ import com.zhousl.aether.data.SessionExecutionManager
 import com.zhousl.aether.data.SettingsRepository
 import com.zhousl.aether.data.WebToolsClient
 import com.zhousl.aether.data.WorkspaceFileBridge
+import com.zhousl.aether.channel.ChannelConfigRepository
+import com.zhousl.aether.channel.ChannelManager
 import com.zhousl.aether.data.pi.PiCompletionClient
 import com.zhousl.aether.data.pi.PiAgentRunner
 import com.zhousl.aether.data.pi.PiKernelBridge
@@ -102,6 +104,7 @@ class AetherAppRuntime(
     )
 
     val settingsRepository = SettingsRepository(application)
+    val channelConfigRepository = ChannelConfigRepository(application)
     val piExtensionStateRepository = PiExtensionStateRepository(application)
     val modKernel = AetherModKernel()
     val chatRepository = ChatRepository(application)
@@ -224,6 +227,14 @@ class AetherAppRuntime(
         piKernelBridge = piKernelBridge,
         piAgentRunner = piAgentRunner,
     )
+    val channelManager = ChannelManager(
+        scope = appScope,
+        configRepository = channelConfigRepository,
+        processor = sessionExecutionManager,
+        onKeepAliveRequired = { required ->
+            if (required) runCatching { AetherForegroundService.ensureRunning(application) }
+        },
+    )
 
     fun initialize() {
         diagnosticLogger.installUncaughtExceptionHandler()
@@ -237,6 +248,7 @@ class AetherAppRuntime(
             ),
         )
         notificationController.ensureChannels()
+        channelManager.start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(appForegroundTracker)
         appScope.launch {
             nativeModManager.initialize()

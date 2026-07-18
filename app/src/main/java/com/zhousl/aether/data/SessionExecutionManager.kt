@@ -5,6 +5,9 @@ import android.os.SystemClock
 import com.zhousl.aether.AetherForegroundService
 import com.zhousl.aether.AetherNotificationController
 import com.zhousl.aether.AppForegroundTracker
+import com.zhousl.aether.channel.SessionAgentEvent
+import com.zhousl.aether.channel.SessionAgentProcessor
+import com.zhousl.aether.channel.SessionAgentRequest
 import com.zhousl.aether.runtime.RuntimeRouter
 import com.zhousl.aether.runtime.RuntimeShellTool
 import com.zhousl.aether.data.pi.PiAgentRunner
@@ -26,14 +29,22 @@ import com.zhousl.aether.ui.syncActiveBranches
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -132,7 +143,7 @@ class SessionExecutionManager(
     private val piCompletionClient: PiCompletionClient? = null,
     private val piKernelBridge: PiKernelBridge,
     private val piAgentRunner: PiAgentRunner,
-) {
+) : SessionAgentProcessor {
     private val currentSettings = MutableStateFlow(AppSettings())
     private val currentProviderConfigs = MutableStateFlow<List<LlmProviderConfig>>(emptyList())
     private val currentExtensionsState = MutableStateFlow(AgentExtensionsState())
@@ -166,6 +177,121 @@ class SessionExecutionManager(
 
     fun isSessionRunning(sessionId: String): Boolean =
         _executionStates.value[sessionId]?.isRunning == true
+
+    override fun process(request: SessionAgentRequest): Flow<SessionAgentEvent> = channelFlow {
+        send(SessionAgentEvent.Started)
+        while (isSessionRunning(request.sessionId)) delay(100)
+
+        val completion = async(start = CoroutineStart.UNDISPATCHED) {
+            turnEvents.first { it.sessionId == request.sessionId }
+        }
+        var previousText = ""
+        val streaming = launch(start = CoroutineStart.UNDISPATCHED) {
+            executionStates
+                .map { states -> states[request.sessionId]?.pendingAssistantText.orEmpty() }
+                .distinctUntilChanged()
+                .collect { accumulated ->
+                    if (accumulated.isBlank() || accumulated == previousText) return@collect
+                    val delta = if (accumulated.startsWith(previousText)) {
+                        accumulated.removePrefix(previousText)
+                    } else {
+                        accumulated
+                    }
+                    previousText = accumulated
+                    send(SessionAgentEvent.TextDelta(delta, accumulated))
+                }
+        }
+
+        try {
+            startExternalTurn(request)
+            val event = completion.await()
+            val persistedText = chatStateStore.state.value.sessions
+                .firstOrNull { it.id == request.sessionId }
+                ?.messages
+                ?.lastOrNull { it.author == MessageAuthor.Agent }
+                ?.text
+                .orEmpty()
+            send(
+                SessionAgentEvent.Completed(
+                    text = persistedText.ifBlank { previousText },
+                    outcome = event.outcome,
+                )
+            )
+        } catch (cancelled: CancellationException) {
+            completion.cancel()
+            throw cancelled
+        } catch (error: Throwable) {
+            completion.cancel()
+            send(SessionAgentEvent.Failed(error.message ?: "Agent turn failed", error))
+        } finally {
+            streaming.cancelAndJoin()
+        }
+    }
+
+    private suspend fun startExternalTurn(request: SessionAgentRequest) {
+        require(request.text.isNotBlank()) { "Channel message is empty" }
+        val settings = settingsRepository.settings.first()
+        val providerConfigs = settingsRepository.providerConfigs.first()
+        val now = System.currentTimeMillis()
+        val userMessage = ChatMessage(
+            id = "${request.source}-${request.sessionId.takeLast(8)}-$now",
+            author = MessageAuthor.User,
+            text = request.text,
+            createdAtMillis = now,
+        )
+        var selectedModelKey = ""
+        var requestMessages: List<ChatMessage> = emptyList()
+        var selectedSkillIds: List<String> = emptyList()
+        var activeSkills: List<ActiveSkillContext> = emptyList()
+        var activeMcpServerIds: List<String> = emptyList()
+        var agentModeEnabled = false
+        val persistedSession = chatRepository.getSessionWithMessages(request.sessionId)
+
+        chatStateStore.updateAndFlush { persisted ->
+            val sessions = persisted.sessions.toMutableList()
+            val index = sessions.indexOfFirst { it.id == request.sessionId }
+            val session = if (index >= 0) {
+                val existing = sessions.removeAt(index)
+                val baseMessages = existing.messages.ifEmpty { persistedSession?.messages.orEmpty() }
+                existing.withDerivedMessages(baseMessages + userMessage)
+            } else {
+                ChatSession(
+                    id = request.sessionId,
+                    title = request.sessionTitle,
+                    preview = userMessage.summaryText(),
+                    hasCustomTitle = true,
+                    messages = listOf(userMessage),
+                    selectedModelKey = resolveDefaultChatModelKey(settings, providerConfigs),
+                )
+            }
+            selectedModelKey = session.selectedModelKey
+            requestMessages = session.messages
+            selectedSkillIds = session.selectedSkillIds
+            activeSkills = session.activeSkills
+            activeMcpServerIds = session.activeMcpServerIds
+            agentModeEnabled = session.agentModeEnabled
+            sessions.add(0, session)
+            persisted.copy(sessions = sessions)
+        }
+
+        startTurn(
+            SessionTurnRequest(
+                sessionId = request.sessionId,
+                settings = resolveModelSettings(
+                    baseSettings = settings,
+                    providerConfigs = providerConfigs,
+                    preferredModelKey = selectedModelKey,
+                    fallbackModelKey = resolveDefaultChatModelKey(settings, providerConfigs),
+                ),
+                requestMessages = requestMessages,
+                selectedSkillIds = selectedSkillIds,
+                activeSkills = activeSkills,
+                activeMcpServerIds = activeMcpServerIds,
+                agentModeEnabled = agentModeEnabled,
+                providerConfigs = providerConfigs,
+            )
+        )
+    }
 
     fun startTurn(request: SessionTurnRequest) {
         val handle = SessionExecutionHandle(sessionId = request.sessionId)

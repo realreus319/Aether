@@ -913,4 +913,24 @@
     <string name="settings_native_mod_restart_required">Restart Aether to apply this Native Mod setting.</string>
     <string name="settings_native_mod_enable_next_start">Enable Native Mods on next start</string>
     <string name="settings_native_mod_disable_next_start">Start in Native Mod Safe Mode next time</string>
+    <string name="settings_channels">Channels</string>
+    <string name="settings_channels_enabled_count">%1$d enabled</string>
+    <string name="settings_channels_description">Connect Aether to external messaging platforms. Messages use the same agent sessions and tools as the app.</string>
+    <string name="settings_channel_app_id">App ID / Client ID</string>
+    <string name="settings_channel_app_secret">App secret / Client secret</string>
+    <string name="settings_channel_bot_id">Bot ID</string>
+    <string name="settings_channel_bot_secret">Bot secret</string>
+    <string name="settings_channel_bot_token">Bot token</string>
+    <string name="settings_channel_base_url">Connection base URL</string>
+    <string name="settings_channel_access">Access control</string>
+    <string name="settings_channel_access_open">Open</string>
+    <string name="settings_channel_access_allow_list">Allow list</string>
+    <string name="settings_channel_access_disabled">Blocked</string>
+    <string name="settings_channel_allowed_users">Allowed user IDs (one per line)</string>
+    <string name="settings_channel_save">Save channel</string>
+    <string name="settings_channel_status_disabled">Disabled</string>
+    <string name="settings_channel_status_starting">Connecting…</string>
+    <string name="settings_channel_status_connected">Connected</string>
+    <string name="settings_channel_status_reconnecting">Reconnecting…</string>
+    <string name="settings_channel_status_error">Connection error</string>
 </resources>

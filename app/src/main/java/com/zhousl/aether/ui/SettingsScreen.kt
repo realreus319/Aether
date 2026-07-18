@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Person
@@ -120,11 +121,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.zhousl.aether.BuildConfig
+import com.zhousl.aether.channel.ChannelAccessMode
+import com.zhousl.aether.channel.ChannelAccessPolicy
+import com.zhousl.aether.channel.ChannelConfig
+import com.zhousl.aether.channel.ChannelConnectionState
+import com.zhousl.aether.channel.ChannelKind
+import com.zhousl.aether.channel.ChannelStatus
 
 import com.zhousl.aether.R
 import java.util.Locale
@@ -215,6 +223,7 @@ private enum class SettingsPage {
     AddMcpServer,
     EditMcpServer,
     ScheduledTasks,
+    Channels,
     AddScheduledTask,
     EditScheduledTask,
     Termux,
@@ -241,6 +250,7 @@ private fun SettingsPage.depth(): Int = when (this) {
     SettingsPage.Extensions,
     SettingsPage.McpServers,
     SettingsPage.ScheduledTasks,
+    SettingsPage.Channels,
     SettingsPage.Termux,
     SettingsPage.Alpine,
     SettingsPage.RuntimeDefaults,
@@ -442,6 +452,9 @@ fun SettingsScreen(
     isFetchingModels: Boolean,
     providerAuthState: PiProviderAuthState,
     appUpdate: AppUpdateUiState,
+    channelConfigs: List<ChannelConfig>,
+    channelStatuses: Map<ChannelKind, ChannelStatus>,
+    onUpsertChannelConfig: (ChannelConfig) -> Unit,
     onSave: (
         String,
         String,
@@ -814,6 +827,7 @@ fun SettingsScreen(
                 piExtensionCount = installedPiExtensions.size,
                 mcpServerCount = mcpServers.size,
                 scheduledTaskCount = scheduledTasks.size,
+                enabledChannelCount = channelConfigs.count { it.enabled },
                 statisticsSummary = buildSettingsStatisticsSummary(usageStatisticsSnapshots),
                 onReplayOnboarding = ::persistAndReplayOnboarding,
                 onNavigate = { page ->
@@ -841,6 +855,13 @@ fun SettingsScreen(
                     themeModeValue = it
                     onUpdateThemeMode(it)
                 },
+                onBack = { currentPage = SettingsPage.Hub.name },
+            )
+
+            SettingsPage.Channels -> ChannelSettingsPage(
+                configs = channelConfigs,
+                statuses = channelStatuses,
+                onUpsert = onUpsertChannelConfig,
                 onBack = { currentPage = SettingsPage.Hub.name },
             )
 
@@ -1294,6 +1315,7 @@ private fun SettingsHub(
     piExtensionCount: Int,
     mcpServerCount: Int,
     scheduledTaskCount: Int,
+    enabledChannelCount: Int,
     statisticsSummary: String,
     onReplayOnboarding: () -> Unit,
     onNavigate: (SettingsPage) -> Unit,
@@ -1416,6 +1438,13 @@ private fun SettingsHub(
                     title = stringResource(R.string.settings_scheduled_tasks),
                     subtitle = stringResource(R.string.settings_scheduled_tasks_count_configured, scheduledTaskCount),
                     onClick = { onNavigate(SettingsPage.ScheduledTasks) },
+                )
+                CardDivider()
+                SettingsNavRow(
+                    icon = Icons.Rounded.Forum,
+                    title = stringResource(R.string.settings_channels),
+                    subtitle = stringResource(R.string.settings_channels_enabled_count, enabledChannelCount),
+                    onClick = { onNavigate(SettingsPage.Channels) },
                 )
                 CardDivider()
                 SettingsNavRow(
@@ -2819,6 +2848,185 @@ private fun ProviderEditPage(
 // -----------------------------------------------------------------------------
 // Personalization sub-page
 // -----------------------------------------------------------------------------
+
+@Composable
+private fun ChannelSettingsPage(
+    configs: List<ChannelConfig>,
+    statuses: Map<ChannelKind, ChannelStatus>,
+    onUpsert: (ChannelConfig) -> Unit,
+    onBack: () -> Unit,
+) {
+    SubPageScaffold(
+        title = stringResource(R.string.settings_channels),
+        onBack = onBack,
+    ) {
+        Text(
+            text = stringResource(R.string.settings_channels_description),
+            style = MaterialTheme.typography.bodySmall,
+            color = AetherOnSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
+        Spacer(Modifier.height(16.dp))
+        configs.sortedBy { it.kind.ordinal }.forEach { config ->
+            ChannelConfigCard(
+                config = config,
+                status = statuses[config.kind] ?: ChannelStatus(config.kind),
+                onUpsert = onUpsert,
+            )
+            Spacer(Modifier.height(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun ChannelConfigCard(
+    config: ChannelConfig,
+    status: ChannelStatus,
+    onUpsert: (ChannelConfig) -> Unit,
+) {
+    var enabled by rememberSaveable(config.kind) { mutableStateOf(config.enabled) }
+    var appId by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.appId)) }
+    var appSecret by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.appSecret)) }
+    var token by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.token)) }
+    var baseUrl by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.baseUrl)) }
+    var allowList by rememberSaveable(config.kind) {
+        mutableStateOf(TextFieldValue(config.accessPolicy.allowedUserIds.joinToString("\n")))
+    }
+    var accessMode by rememberSaveable(config.kind) { mutableStateOf(config.accessPolicy.mode) }
+
+    fun snapshot(isEnabled: Boolean = enabled) = config.copy(
+        enabled = isEnabled,
+        appId = appId.text.trim(),
+        appSecret = appSecret.text.trim(),
+        token = token.text.trim(),
+        baseUrl = baseUrl.text.trim(),
+        accessPolicy = ChannelAccessPolicy(
+            mode = accessMode,
+            allowedUserIds = allowList.text.split(',', '\n').map(String::trim).filter(String::isNotBlank).toSet(),
+        ),
+    )
+
+    SettingsCardGroup {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = config.kind.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AetherOnSurface,
+                    )
+                    Text(
+                        text = channelStatusLabel(status),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (status.state == ChannelConnectionState.Error) Color(0xFFD25757) else AetherOnSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = {
+                        enabled = it
+                        onUpsert(snapshot(it))
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = AetherOnPrimary,
+                        checkedTrackColor = AetherPrimary,
+                    ),
+                )
+            }
+            CardDivider()
+            if (config.kind == ChannelKind.WeChat) {
+                ChatGptTextField(
+                    label = stringResource(R.string.settings_channel_bot_token),
+                    value = token,
+                    visualTransformation = PasswordVisualTransformation(),
+                    onValueChange = { token = it },
+                )
+            } else {
+                ChatGptTextField(
+                    label = if (config.kind == ChannelKind.WeCom) {
+                        stringResource(R.string.settings_channel_bot_id)
+                    } else {
+                        stringResource(R.string.settings_channel_app_id)
+                    },
+                    value = appId,
+                    onValueChange = { appId = it },
+                )
+                CardDivider()
+                ChatGptTextField(
+                    label = if (config.kind == ChannelKind.WeCom) {
+                        stringResource(R.string.settings_channel_bot_secret)
+                    } else {
+                        stringResource(R.string.settings_channel_app_secret)
+                    },
+                    value = appSecret,
+                    visualTransformation = PasswordVisualTransformation(),
+                    onValueChange = { appSecret = it },
+                )
+            }
+            CardDivider()
+            ChatGptTextField(
+                label = stringResource(R.string.settings_channel_base_url),
+                value = baseUrl,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                onValueChange = { baseUrl = it },
+            )
+            CardDivider()
+            Text(
+                text = stringResource(R.string.settings_channel_access),
+                style = MaterialTheme.typography.labelLarge,
+                color = AetherOnSurface,
+                modifier = Modifier.padding(start = 16.dp, top = 14.dp),
+            )
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                ChannelAccessMode.entries.forEachIndexed { index, mode ->
+                    SegmentedButton(
+                        selected = accessMode == mode,
+                        onClick = { accessMode = mode },
+                        shape = SegmentedButtonDefaults.itemShape(index, ChannelAccessMode.entries.size),
+                    ) {
+                        Text(
+                            when (mode) {
+                                ChannelAccessMode.Open -> stringResource(R.string.settings_channel_access_open)
+                                ChannelAccessMode.AllowList -> stringResource(R.string.settings_channel_access_allow_list)
+                                ChannelAccessMode.Disabled -> stringResource(R.string.settings_channel_access_disabled)
+                            }
+                        )
+                    }
+                }
+            }
+            if (accessMode == ChannelAccessMode.AllowList) {
+                ChatGptTextField(
+                    label = stringResource(R.string.settings_channel_allowed_users),
+                    value = allowList,
+                    minLines = 2,
+                    onValueChange = { allowList = it },
+                )
+            }
+            Button(
+                onClick = { onUpsert(snapshot()) },
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AetherPrimary),
+            ) {
+                Text(stringResource(R.string.settings_channel_save))
+            }
+        }
+    }
+}
+
+@Composable
+private fun channelStatusLabel(status: ChannelStatus): String = when (status.state) {
+    ChannelConnectionState.Disabled -> stringResource(R.string.settings_channel_status_disabled)
+    ChannelConnectionState.Starting -> stringResource(R.string.settings_channel_status_starting)
+    ChannelConnectionState.Connected -> stringResource(R.string.settings_channel_status_connected)
+    ChannelConnectionState.Reconnecting -> stringResource(R.string.settings_channel_status_reconnecting)
+    ChannelConnectionState.Error -> status.detail.ifBlank { stringResource(R.string.settings_channel_status_error) }
+}
 
 @Composable
 private fun PersonalizationPage(

@@ -348,6 +348,8 @@ private fun AetherAppContent(
     val appRuntime = remember(context) {
         (context.applicationContext as AetherApplication).runtime
     }
+    val channelConfigs = appRuntime.channelConfigRepository.configs.collectAsStateWithLifecycle().value
+    val channelStatuses = appRuntime.channelManager.statuses.collectAsStateWithLifecycle().value
     val workspaceFileBridge = appRuntime.workspaceFileBridge
     val runtimeWorkspaceFileBridge = appRuntime.runtimeWorkspaceFileBridge
     val activeSession = uiState.sessions.firstOrNull { it.id == uiState.currentSessionId }
@@ -924,6 +926,9 @@ private fun AetherAppContent(
                     isFetchingModels = uiState.isFetchingModels,
                     providerAuthState = uiState.providerAuthState,
                     appUpdate = uiState.appUpdate,
+                    channelConfigs = channelConfigs,
+                    channelStatuses = channelStatuses,
+                    onUpsertChannelConfig = appRuntime.channelConfigRepository::upsert,
                     onSave = viewModel::saveSettings,
                     onUpdateLanguage = { language ->
                         viewModel.updateAppLanguage(language)

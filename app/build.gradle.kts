@@ -232,6 +232,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.google.material)
     implementation(libs.squareup.okhttp)
+    implementation(libs.larksuite.oapi)
     implementation(libs.jsoup)
     implementation(libs.flexmark.html2md.converter)
     implementation(libs.snakeyaml)
