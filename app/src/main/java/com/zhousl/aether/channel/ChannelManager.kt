@@ -49,7 +49,7 @@ class ChannelManager(
         configJob?.cancel()
         configJob = null
         val oldChannels = synchronized(lock) {
-            channelJobs.forEach(Job::cancel)
+            channelJobs.forEach { it.cancel() }
             channelJobs.clear()
             channels.values.toList().also { channels.clear() }
         }
@@ -61,7 +61,7 @@ class ChannelManager(
 
     private suspend fun reconfigure(configs: List<ChannelConfig>) {
         val previous = synchronized(lock) {
-            channelJobs.forEach(Job::cancel)
+            channelJobs.forEach { it.cancel() }
             channelJobs.clear()
             channels.values.toList().also { channels.clear() }
         }
