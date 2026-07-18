@@ -51,6 +51,8 @@ import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -85,6 +87,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -915,7 +919,10 @@ private fun ProviderSetupStep(
                         }
                         MinimalInputField(
                             label = stringResource(R.string.onboarding_model),
-                            value = if (modelChoices.any { it.equals(formState.modelId.trim(), ignoreCase = true) }) {
+                            value = if (formState.cachedModels.any {
+                                    it.equals(formState.modelId.trim(), ignoreCase = true)
+                                }
+                            ) {
                                 ""
                             } else {
                                 formState.modelId
@@ -1689,6 +1696,8 @@ private fun TavilyStep(
                 label = stringResource(R.string.onboarding_api_key),
                 value = value,
                 placeholder = stringResource(R.string.onboarding_paste_it_here),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                isSecret = true,
                 onValueChange = onValueChange,
             )
             PrimaryActionButton(
@@ -2111,8 +2120,10 @@ private fun MinimalInputField(
     value: String,
     placeholder: String,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    isSecret: Boolean = false,
     onValueChange: (String) -> Unit,
 ) {
+    var passwordVisible by rememberSaveable(label) { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -2127,25 +2138,57 @@ private fun MinimalInputField(
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(TourSurface)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .tourBringIntoViewOnFocus(),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = TourTextPrimary),
             cursorBrush = SolidColor(TourTextPrimary),
             singleLine = true,
             keyboardOptions = keyboardOptions,
+            visualTransformation = if (isSecret && !passwordVisible) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
             decorationBox = { innerTextField ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 10.dp),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (value.isBlank()) {
-                        Text(
-                            text = placeholder,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = TourTextTertiary,
-                        )
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (value.isBlank()) {
+                            Text(
+                                text = placeholder,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = TourTextTertiary,
+                            )
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
+                    if (isSecret) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.common_hide_password
+                                    } else {
+                                        R.string.common_show_password
+                                    }
+                                ),
+                                tint = TourTextSecondary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
             },
         )

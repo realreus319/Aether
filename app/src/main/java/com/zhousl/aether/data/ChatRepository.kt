@@ -1043,6 +1043,12 @@ private fun parseAttachments(attachments: JSONArray?): List<ChatAttachment> {
             val attachment = attachments.optJSONObject(attachmentIndex) ?: continue
             val mimeType = attachment.optString("mimeType")
             val workspacePath = attachment.optString("workspacePath")
+            val inlineBase64 = attachment.optString("inlineBase64")
+            val kind = AttachmentKind.fromStored(
+                value = attachment.optString("kind"),
+                mimeType = mimeType,
+            )
+            val hasVisualFallback = kind == AttachmentKind.Image && inlineBase64.isNotBlank()
             add(
                 ChatAttachment(
                     id = attachment.optString("id").ifBlank { "attachment-$attachmentIndex" },
@@ -1050,22 +1056,19 @@ private fun parseAttachments(attachments: JSONArray?): List<ChatAttachment> {
                     name = attachment.optString("name").ifBlank { "Attachment ${attachmentIndex + 1}" },
                     mimeType = mimeType,
                     sizeBytes = if (attachment.has("sizeBytes")) attachment.optLong("sizeBytes") else null,
-                    kind = AttachmentKind.fromStored(
-                        value = attachment.optString("kind"),
-                        mimeType = mimeType,
-                    ),
+                    kind = kind,
                     workspacePath = workspacePath,
-                    workspaceState = if (workspacePath.isBlank()) {
+                    workspaceState = if (workspacePath.isBlank() && !hasVisualFallback) {
                         AttachmentWorkspaceState.Failed
                     } else {
                         AttachmentWorkspaceState.Ready
                     },
-                    workspaceError = if (workspacePath.isBlank()) {
+                    workspaceError = if (workspacePath.isBlank() && !hasVisualFallback) {
                         "This attachment is missing its workspace copy."
                     } else {
                         ""
                     },
-                    inlineBase64 = attachment.optString("inlineBase64"),
+                    inlineBase64 = inlineBase64,
                 )
             )
         }

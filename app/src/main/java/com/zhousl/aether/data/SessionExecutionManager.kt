@@ -1462,6 +1462,24 @@ class SessionExecutionManager(
         settings: AppSettings,
     ): List<LlmContentPart> {
         if (attachment.workspacePath.isBlank()) {
+            if (
+                attachment.kind == AttachmentKind.Image &&
+                attachment.mimeType.startsWith("image/") &&
+                attachment.inlineBase64.isNotBlank()
+            ) {
+                return listOf(
+                    LlmTextPart(
+                        "Visual attachment:\n" +
+                            "Name: ${attachment.name}\n" +
+                            "Type: ${attachment.mimeType}\n" +
+                            "This image is attached directly to the model request and has no workspace copy."
+                    ),
+                    LlmImagePart(
+                        mimeType = attachment.mimeType,
+                        base64Data = attachment.inlineBase64,
+                    ),
+                )
+            }
             return listOf(LlmTextPart(
                 "Attached file '${attachment.name}' is missing a workspace path. Ask the user to re-upload it if you need to inspect the file."
             ))

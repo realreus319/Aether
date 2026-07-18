@@ -2285,11 +2285,27 @@ private fun TermuxEnvironmentVariablesSection(
                 )
             }
             rows.forEachIndexed { index, variable ->
-                var nameValue by rememberSaveable(index, variable.name, stateSaver = TextFieldValue.Saver) {
+                var nameValue by rememberSaveable(index, stateSaver = TextFieldValue.Saver) {
                     mutableStateOf(TextFieldValue(variable.name))
                 }
-                var valueValue by rememberSaveable(index, variable.value, stateSaver = TextFieldValue.Saver) {
+                var valueValue by rememberSaveable(index, stateSaver = TextFieldValue.Saver) {
                     mutableStateOf(TextFieldValue(variable.value))
+                }
+                LaunchedEffect(variable.name) {
+                    if (variable.name != nameValue.text) {
+                        nameValue = TextFieldValue(
+                            text = variable.name,
+                            selection = androidx.compose.ui.text.TextRange(variable.name.length),
+                        )
+                    }
+                }
+                LaunchedEffect(variable.value) {
+                    if (variable.value != valueValue.text) {
+                        valueValue = TextFieldValue(
+                            text = variable.value,
+                            selection = androidx.compose.ui.text.TextRange(variable.value.length),
+                        )
+                    }
                 }
                 fun commitRow(name: String = nameValue.text, value: String = valueValue.text) {
                     val updated = rows.toMutableList()
@@ -2958,6 +2974,8 @@ private fun WebToolsPage(
                 label = stringResource(R.string.settings_tavily_api_key),
                 value = tavilyApiKeyValue,
                 onValueChange = onTavilyApiKeyChanged,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                isSecret = true,
             )
             CardDivider()
             ChatGptTextField(

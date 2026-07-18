@@ -1,5 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="common_show_password">显示密码</string>
+    <string name="common_hide_password">隐藏密码</string>
     <string name="app_name">Aether</string>
 
     <!-- Common -->

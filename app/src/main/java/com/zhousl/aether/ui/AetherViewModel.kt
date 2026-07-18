@@ -137,6 +137,7 @@ class AetherViewModel(
     private val bashTool = runtime.bashTool
     private val rootSetupController = runtime.rootSetupController
     private val workspaceFileBridge = runtime.workspaceFileBridge
+    private val runtimeWorkspaceFileBridge = runtime.runtimeWorkspaceFileBridge
     private val agentModeController = runtime.agentModeController
     private val skillManager = runtime.skillManager
     private val piExtensionManager = runtime.piExtensionManager
@@ -3990,7 +3991,8 @@ class AetherViewModel(
         attachment: ChatAttachment,
         sessionId: String,
     ) {
-        val importResult = workspaceFileBridge.importAttachmentToWorkspace(
+        val importResult = runtimeWorkspaceFileBridge.importAttachmentToWorkspace(
+            settings = _uiState.value.settings,
             sourceUri = Uri.parse(attachment.uri),
             sessionId = sessionId,
             attachmentId = attachment.id,
@@ -4051,13 +4053,24 @@ class AetherViewModel(
                     )
                 },
                 onFailure = { throwable ->
-                    existingAttachment.copy(
-                        workspaceState = AttachmentWorkspaceState.Failed,
-                        workspaceError = throwable.message
-                            .orEmpty()
-                            .ifBlank { "Couldn't copy this attachment into the workspace." },
-                        workspaceBytesPerSecond = 0L,
-                    )
+                    val inlineImageBase64 = readInlineImageAttachment(existingAttachment)
+                    if (inlineImageBase64.isNotBlank()) {
+                        existingAttachment.copy(
+                            workspacePath = "",
+                            workspaceState = AttachmentWorkspaceState.Ready,
+                            workspaceError = "",
+                            workspaceBytesPerSecond = 0L,
+                            inlineBase64 = inlineImageBase64,
+                        )
+                    } else {
+                        existingAttachment.copy(
+                            workspaceState = AttachmentWorkspaceState.Failed,
+                            workspaceError = throwable.message
+                                .orEmpty()
+                                .ifBlank { "Couldn't copy this attachment into the workspace." },
+                            workspaceBytesPerSecond = 0L,
+                        )
+                    }
                 },
             )
 
@@ -4069,9 +4082,32 @@ class AetherViewModel(
         }
     }
 
+    private fun readInlineImageAttachment(attachment: ChatAttachment): String {
+        if (attachment.kind != AttachmentKind.Image || !attachment.mimeType.startsWith("image/")) return ""
+        if (attachment.sizeBytes?.let { it > MaxInlineImageAttachmentBytes } == true) return ""
+        return runCatching {
+            val resolver = getApplication<Application>().contentResolver
+            val bytes = resolver.openInputStream(Uri.parse(attachment.uri))?.use { input ->
+                val buffer = ByteArray(MaxInlineImageAttachmentBytes + 1)
+                var total = 0
+                while (total < buffer.size) {
+                    val read = input.read(buffer, total, buffer.size - total)
+                    if (read <= 0) break
+                    total += read
+                }
+                require(total <= MaxInlineImageAttachmentBytes) { "Image is too large to inline." }
+                buffer.copyOf(total)
+            } ?: return ""
+            Base64.getEncoder().encodeToString(bytes)
+        }.getOrDefault("")
+    }
+
     private fun normalizeDraftAttachmentForEditing(
         attachment: ChatAttachment,
-    ): ChatAttachment = if (attachment.workspacePath.isNotBlank()) {
+    ): ChatAttachment = if (
+        attachment.workspacePath.isNotBlank() ||
+        (attachment.kind == AttachmentKind.Image && attachment.inlineBase64.isNotBlank())
+    ) {
         attachment.copy(
             workspaceState = AttachmentWorkspaceState.Ready,
             workspaceError = "",

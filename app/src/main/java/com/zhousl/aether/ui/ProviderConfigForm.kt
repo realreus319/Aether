@@ -36,6 +36,8 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -1540,6 +1542,7 @@ private fun ProviderFormTextField(
     var fieldValue by rememberSaveable(label, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(value, selection = TextRange(value.length)))
     }
+    var passwordVisible by rememberSaveable(label) { mutableStateOf(false) }
 
     LaunchedEffect(value) {
         if (value != fieldValue.text) {
@@ -1570,21 +1573,46 @@ private fun ProviderFormTextField(
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = AetherOnSurface),
             cursorBrush = SolidColor(ProviderFormPrimary),
             keyboardOptions = keyboardOptions,
-            visualTransformation = if (isSecret) {
+            visualTransformation = if (isSecret && !passwordVisible) {
                 PasswordVisualTransformation()
             } else {
                 VisualTransformation.None
             },
             decorationBox = { innerTextField ->
-                Box {
-                    if (fieldValue.text.isEmpty()) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (fieldValue.text.isEmpty()) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
+                    if (isSecret) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.common_hide_password
+                                    } else {
+                                        R.string.common_show_password
+                                    }
+                                ),
+                                tint = AetherOnSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
             },
         )
