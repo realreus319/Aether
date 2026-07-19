@@ -91,8 +91,11 @@ import com.zhousl.aether.data.resolveModelSettings
 import com.zhousl.aether.data.resolveStoredOrAutomaticModelKey
 import com.zhousl.aether.termux.TermuxSetupIssue
 import com.zhousl.aether.termux.TermuxSetupState
+import com.zhousl.aether.runtime.AlpineSetupProgress
 import com.zhousl.aether.runtime.AlpineTerminalLaunchSpec
 import com.zhousl.aether.runtime.AlpineSetupActivity
+import com.zhousl.aether.runtime.LocalRuntimeIssue
+import com.zhousl.aether.runtime.LocalRuntimeSetupState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -336,6 +339,11 @@ class AetherViewModel(
             }
         }
         viewModelScope.launch {
+            runtime.alpineChromeController.displayState.collect { displayState ->
+                _uiState.update { current -> current.copy(chromeDisplayState = displayState) }
+            }
+        }
+        viewModelScope.launch {
             agentModeController.authorizationState.collect { authorizationState ->
                 _uiState.update { current -> current.copy(agentModeAuthorizationState = authorizationState) }
             }
@@ -521,6 +529,41 @@ class AetherViewModel(
             }
             _uiState.update { current -> current.copy(alpineSetupState = setupState) }
             if (setupState.isReady) {
+                val settings = _uiState.value.settings
+                val verifiedProfiles = withContext(Dispatchers.IO) {
+                    settings.alpinePackageProfiles.mapValues { (profileId, profileState) ->
+                        if (
+                            profileState.installed &&
+                            !runtime.alpineRuntime.isPackageProfileInstalled(profileId)
+                        ) {
+                            profileState.copy(
+                                installed = false,
+                                installedAtMillis = 0L,
+                                lastError = "",
+                            )
+                        } else {
+                            profileState
+                        }
+                    }
+                }
+                if (verifiedProfiles != settings.alpinePackageProfiles) {
+                    settingsRepository.updateSettings(
+                        settings.copy(alpinePackageProfiles = verifiedProfiles)
+                    )
+                    if (verifiedProfiles["chrome"]?.installed != true) {
+                        _uiState.update { current ->
+                            current.copy(
+                                draftChromeEnabled = false,
+                                sessions = current.sessions.map { it.copy(chromeEnabled = false) },
+                            )
+                        }
+                        chatStateStore.updateAndFlush { persisted ->
+                            persisted.copy(
+                                sessions = persisted.sessions.map { it.copy(chromeEnabled = false) },
+                            )
+                        }
+                    }
+                }
                 refreshPiCoreSetup()
             } else {
                 _uiState.update {
@@ -553,6 +596,7 @@ class AetherViewModel(
                             activity = when (progress.activity) {
                                 AlpineSetupActivity.Extracting -> PiCoreSetupActivity.Extracting
                                 AlpineSetupActivity.Downloading -> PiCoreSetupActivity.Downloading
+                                AlpineSetupActivity.Installing -> PiCoreSetupActivity.None
                                 AlpineSetupActivity.None -> PiCoreSetupActivity.None
                             },
                             bytesPerSecond = progress.bytesPerSecond,
@@ -648,6 +692,7 @@ class AetherViewModel(
     fun resetAlpineRuntime() {
         viewModelScope.launch {
             val setupState = withContext(Dispatchers.IO) {
+                runtime.alpineChromeController.stop()
                 runtime.alpineRuntime.reset()
             }
             val settings = _uiState.value.settings
@@ -663,28 +708,70 @@ class AetherViewModel(
                     alpinePackageProfiles = emptyMap(),
                 )
             )
-            _uiState.update { current -> current.copy(alpineSetupState = setupState) }
+            _uiState.update { current ->
+                current.copy(
+                    alpineSetupState = setupState,
+                    alpinePackageInstallProgress = emptyMap(),
+                    draftChromeEnabled = false,
+                    sessions = current.sessions.map { it.copy(chromeEnabled = false) },
+                )
+            }
+            chatStateStore.updateAndFlush { persisted ->
+                persisted.copy(
+                    sessions = persisted.sessions.map { it.copy(chromeEnabled = false) },
+                )
+            }
         }
     }
 
     fun installAlpinePackageProfile(profileId: String) {
+        if (_uiState.value.alpinePackageInstallProgress.containsKey(profileId)) return
         viewModelScope.launch {
-            val installingSettings = _uiState.value.settings.copy(
-                alpinePackageProfiles = _uiState.value.settings.alpinePackageProfiles +
-                    (
-                        profileId to PackageProfileState(
-                            profileId = profileId,
-                            installed = false,
-                            installedAtMillis = 0L,
-                            lastError = "Installing...",
-                        )
-                        ),
-            )
-            settingsRepository.updateSettings(installingSettings)
-            val setupState = withContext(Dispatchers.IO) {
-                runtime.alpineRuntime.installPackageProfile(profileId)
+            _uiState.update { current ->
+                current.copy(
+                    alpinePackageInstallProgress = current.alpinePackageInstallProgress +
+                        (
+                            profileId to AlpineSetupProgress(
+                                activity = AlpineSetupActivity.Downloading,
+                            )
+                            ),
+                )
             }
-            val profileState = if (setupState.isReady) {
+            val installState = try {
+                withContext(Dispatchers.IO) {
+                    runtime.alpineRuntime.installPackageProfile(profileId) { progress ->
+                        _uiState.update { current ->
+                            val previous = current.alpinePackageInstallProgress[profileId]
+                            val merged = progress.copy(
+                                bytesPerSecond = progress.bytesPerSecond.takeIf { it > 0L }
+                                    ?: previous?.bytesPerSecond
+                                    ?: 0L,
+                                progressPercent = progress.progressPercent
+                                    ?: previous?.progressPercent,
+                            )
+                            current.copy(
+                                alpinePackageInstallProgress =
+                                    current.alpinePackageInstallProgress + (profileId to merged),
+                            )
+                        }
+                    }
+                }
+            } catch (throwable: Throwable) {
+                if (throwable is CancellationException) throw throwable
+                LocalRuntimeSetupState(
+                    runtimeId = LocalRuntimeId.Alpine,
+                    issue = LocalRuntimeIssue.Failed,
+                    detail = throwable.userFacingMessage(),
+                )
+            } finally {
+                _uiState.update { current ->
+                    current.copy(
+                        alpinePackageInstallProgress =
+                            current.alpinePackageInstallProgress - profileId,
+                    )
+                }
+            }
+            val profileState = if (installState.isReady) {
                 PackageProfileState(
                     profileId = profileId,
                     installed = true,
@@ -696,7 +783,7 @@ class AetherViewModel(
                     profileId = profileId,
                     installed = false,
                     installedAtMillis = 0L,
-                    lastError = setupState.detail.ifBlank { "Install failed." },
+                    lastError = installState.detail.ifBlank { "Install failed." },
                 )
             }
             val settings = _uiState.value.settings
@@ -705,8 +792,11 @@ class AetherViewModel(
                     alpinePackageProfiles = settings.alpinePackageProfiles + (profileId to profileState),
                 )
             )
-            _uiState.update { current -> current.copy(alpineSetupState = setupState) }
-            emitTransientMessage(UiText.Raw(setupState.detail.ifBlank { "Alpine package profile updated." }))
+            val runtimeState = withContext(Dispatchers.IO) {
+                runtime.alpineRuntime.inspectSetup()
+            }
+            _uiState.update { current -> current.copy(alpineSetupState = runtimeState) }
+            emitTransientMessage(UiText.Raw(installState.detail.ifBlank { "Alpine package profile updated." }))
         }
     }
 
@@ -715,20 +805,11 @@ class AetherViewModel(
             runCatching { runtime.alpineRuntime.createTerminalLaunchSpec() }
         }
 
-    private suspend fun updateAlpinePackageProfileInstalling(profileId: String) {
-        val installingSettings = _uiState.value.settings.copy(
-            alpinePackageProfiles = _uiState.value.settings.alpinePackageProfiles +
-                (
-                    profileId to PackageProfileState(
-                        profileId = profileId,
-                        installed = false,
-                        installedAtMillis = 0L,
-                        lastError = "Installing...",
-                    )
-                )
-        )
-        settingsRepository.updateSettings(installingSettings)
-    }
+    suspend fun startAlpineChrome(): Result<Unit> =
+        runtime.alpineChromeController.startBrowser()
+
+    suspend fun shouldShowAlpineChromeKeyboard(x: Int, y: Int): Result<Boolean> =
+        runtime.alpineChromeController.shouldShowKeyboardAfterClick(x, y)
 
     fun setDefaultRuntime(runtimeId: LocalRuntimeId) {
         viewModelScope.launch {
@@ -1156,6 +1237,7 @@ class AetherViewModel(
                     draftSelectedSkillIds = emptyList(),
                     draftSelectedMcpServerIds = emptyList(),
                     draftAgentModeEnabled = false,
+                    draftChromeEnabled = false,
                     draftWorkspaceId = null,
                     editingSessionId = null,
                     editingMessageId = null,
@@ -1374,6 +1456,7 @@ class AetherViewModel(
                 draftSelectedSkillIds = selectedSkillIds.filter(enabledSkillIds::contains),
                 draftSelectedMcpServerIds = emptyList(),
                 draftAgentModeEnabled = false,
+                draftChromeEnabled = false,
                 draftWorkspaceId = null,
                 editingSessionId = null,
                 editingMessageId = null,
@@ -1398,6 +1481,7 @@ class AetherViewModel(
                 draftSelectedSkillIds = emptyList(),
                 draftSelectedMcpServerIds = emptyList(),
                 draftAgentModeEnabled = false,
+                draftChromeEnabled = false,
                 draftWorkspaceId = null,
                 editingSessionId = null,
                 editingMessageId = null,
@@ -1607,6 +1691,7 @@ class AetherViewModel(
                             draftSelectedSkillIds = emptyList(),
                             draftSelectedMcpServerIds = emptyList(),
                             draftAgentModeEnabled = false,
+                            draftChromeEnabled = false,
                             draftWorkspaceId = null,
                             editingSessionId = null,
                             editingMessageId = null,
@@ -1669,6 +1754,7 @@ class AetherViewModel(
                 draftSelectedSkillIds = emptyList(),
                 draftSelectedMcpServerIds = emptyList(),
                 draftAgentModeEnabled = false,
+                draftChromeEnabled = false,
                 draftWorkspaceId = null,
                 editingSessionId = null,
                 editingMessageId = null,
@@ -1832,6 +1918,7 @@ class AetherViewModel(
                 activeSkills = session.activeSkills,
                 activeMcpServerIds = session.activeMcpServerIds,
                 agentModeEnabled = session.agentModeEnabled,
+                chromeEnabled = session.chromeEnabled,
                 providerConfigs = snapshot.providerConfigs,
             )
             val updatedSessions = current.sessions.toMutableList().apply {
@@ -1913,6 +2000,7 @@ class AetherViewModel(
                 activeSkills = updatedSession.activeSkills,
                 activeMcpServerIds = updatedSession.activeMcpServerIds,
                 agentModeEnabled = updatedSession.agentModeEnabled,
+                chromeEnabled = updatedSession.chromeEnabled,
                 providerConfigs = snapshot.providerConfigs,
             )
 
@@ -3061,6 +3149,48 @@ class AetherViewModel(
         }
     }
 
+    fun setComposerChromeSelected(selected: Boolean) {
+        var didUpdate = false
+        var sessionIdForPersistence: String? = null
+        _uiState.update { current ->
+            val resolvedSelected = selected &&
+                current.settings.alpinePackageProfiles["chrome"]?.installed == true &&
+                current.alpineSetupState.isReady
+            if (current.currentSessionId == DraftSessionId) {
+                if (current.draftChromeEnabled == resolvedSelected) {
+                    current
+                } else {
+                    didUpdate = true
+                    current.copy(draftChromeEnabled = resolvedSelected)
+                }
+            } else {
+                val sessionIndex = current.sessions.indexOfFirst { it.id == current.currentSessionId }
+                if (sessionIndex < 0) return@update current
+                val session = current.sessions[sessionIndex]
+                if (session.chromeEnabled == resolvedSelected) {
+                    current
+                } else {
+                    didUpdate = true
+                    sessionIdForPersistence = current.currentSessionId
+                    current.copy(
+                        sessions = current.sessions.toMutableList().apply {
+                            this[sessionIndex] = session.copy(chromeEnabled = resolvedSelected)
+                        }
+                    )
+                }
+            }
+        }
+        sessionIdForPersistence?.takeIf { didUpdate }?.let { sessionId ->
+            persistSessionMutation(sessionId) { session ->
+                val resolvedSelected = selected &&
+                    _uiState.value.settings.alpinePackageProfiles["chrome"]?.installed == true &&
+                    _uiState.value.alpineSetupState.isReady
+                if (session.chromeEnabled == resolvedSelected) null
+                else session.copy(chromeEnabled = resolvedSelected)
+            }
+        }
+    }
+
     fun sendCurrentMessage() {
         submitCurrentMessage(SessionFollowUpMode.Queue)
     }
@@ -3791,6 +3921,7 @@ class AetherViewModel(
         var requestActiveSkills: List<ActiveSkillContext> = emptyList()
         var requestActiveMcpServerIds: List<String> = emptyList()
         var requestAgentModeEnabled = false
+        var requestChromeEnabled = false
         var requestModelKey = ""
         var shouldGenerateSessionTitle = false
         var sessionForPersistence: ChatSession? = null
@@ -3823,6 +3954,7 @@ class AetherViewModel(
                         requestActiveSkills = updated.activeSkills
                         requestActiveMcpServerIds = updated.activeMcpServerIds
                         requestAgentModeEnabled = updated.agentModeEnabled
+                        requestChromeEnabled = updated.chromeEnabled
                         requestModelKey = updated.selectedModelKey
                     } else {
                         updatedSessions.add(editingSessionIndex, editingSession)
@@ -3842,6 +3974,7 @@ class AetherViewModel(
                     requestActiveSkills = updated.activeSkills
                     requestActiveMcpServerIds = updated.activeMcpServerIds
                     requestAgentModeEnabled = updated.agentModeEnabled
+                    requestChromeEnabled = updated.chromeEnabled
                     requestModelKey = updated.selectedModelKey
                 } else {
                     val newSession = createSession(
@@ -3855,6 +3988,7 @@ class AetherViewModel(
                         selectedSkillIds = current.draftSelectedSkillIds,
                         activeMcpServerIds = current.draftSelectedMcpServerIds,
                         agentModeEnabled = current.draftAgentModeEnabled,
+                        chromeEnabled = current.draftChromeEnabled,
                     )
                     shouldGenerateSessionTitle = true
                     sessionForPersistence = newSession
@@ -3864,6 +3998,7 @@ class AetherViewModel(
                     requestActiveSkills = newSession.activeSkills
                     requestActiveMcpServerIds = newSession.activeMcpServerIds
                     requestAgentModeEnabled = newSession.agentModeEnabled
+                    requestChromeEnabled = newSession.chromeEnabled
                     requestModelKey = newSession.selectedModelKey
                 }
             }
@@ -3881,6 +4016,7 @@ class AetherViewModel(
                 activeSkills = requestActiveSkills,
                 activeMcpServerIds = requestActiveMcpServerIds,
                 agentModeEnabled = requestAgentModeEnabled,
+                chromeEnabled = requestChromeEnabled,
                 providerConfigs = current.providerConfigs,
             )
 
@@ -3893,6 +4029,7 @@ class AetherViewModel(
                 draftSelectedSkillIds = emptyList(),
                 draftSelectedMcpServerIds = emptyList(),
                 draftAgentModeEnabled = false,
+                draftChromeEnabled = false,
                 draftWorkspaceId = null,
                 editingSessionId = null,
                 editingMessageId = null,
@@ -4469,6 +4606,7 @@ class AetherViewModel(
             activeSkills = session.activeSkills,
             activeMcpServerIds = session.activeMcpServerIds,
             agentModeEnabled = session.agentModeEnabled,
+            chromeEnabled = session.chromeEnabled,
             providerConfigs = snapshot.providerConfigs,
         )
     }
@@ -4706,6 +4844,7 @@ class AetherViewModel(
         activeSkills: List<ActiveSkillContext> = emptyList(),
         activeMcpServerIds: List<String> = emptyList(),
         agentModeEnabled: Boolean = false,
+        chromeEnabled: Boolean = false,
     ): ChatSession {
         val metadata = deriveSessionMetadata(messages)
         return ChatSession(
@@ -4719,6 +4858,7 @@ class AetherViewModel(
             activeSkills = activeSkills,
             activeMcpServerIds = activeMcpServerIds,
             agentModeEnabled = agentModeEnabled,
+            chromeEnabled = chromeEnabled,
         )
     }
 
