@@ -2885,11 +2885,11 @@ private fun ChannelConfigCard(
     onUpsert: (ChannelConfig) -> Unit,
 ) {
     var enabled by rememberSaveable(config.kind) { mutableStateOf(config.enabled) }
-    var appId by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.appId)) }
-    var appSecret by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.appSecret)) }
-    var token by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.token)) }
-    var baseUrl by rememberSaveable(config.kind) { mutableStateOf(TextFieldValue(config.baseUrl)) }
-    var allowList by rememberSaveable(config.kind) {
+    var appId by rememberSaveable(config.kind, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(config.appId)) }
+    var appSecret by rememberSaveable(config.kind, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(config.appSecret)) }
+    var token by rememberSaveable(config.kind, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(config.token)) }
+    var baseUrl by rememberSaveable(config.kind, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(config.baseUrl)) }
+    var allowList by rememberSaveable(config.kind, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(config.accessPolicy.allowedUserIds.joinToString("\n")))
     }
     var accessMode by rememberSaveable(config.kind) { mutableStateOf(config.accessPolicy.mode) }

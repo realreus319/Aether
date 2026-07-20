@@ -30,6 +30,7 @@ abstract class ChatHistoryDatabase : RoomDatabase() {
                 ChatHistoryDatabase::class.java,
                 "aether_chat_history.db",
             ).addMigrations(Migration1To2, Migration2To3)
+                .fallbackToDestructiveMigration(false)
                 .build()
                 .also { instance = it }
         }
