@@ -607,36 +607,63 @@ fun List<ProviderModelOption>.resolveAutomaticModelKey(
     return rankedOption?.key ?: firstOrNull()?.key.orEmpty()
 }
 
-private fun automaticModelPriority(
+fun List<ProviderModelOption>.sortedForAutomaticModelPurpose(
+    purpose: AutomaticModelPurpose,
+): List<ProviderModelOption> = sortedWith(
+    compareBy<ProviderModelOption> {
+        automaticModelPriority(it.modelId, purpose) ?: Int.MAX_VALUE
+    }
+        .thenBy { it.providerId }
+        .thenBy { it.modelId }
+)
+
+internal fun automaticModelPriority(
     modelId: String,
     purpose: AutomaticModelPurpose,
 ): Int? {
     val normalized = modelId.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "")
-    val isGemini31Pro = normalized.contains("gemini31pro")
-    val isGemini3Flash = Regex("gemini3(?:0)?flash").containsMatchIn(normalized) ||
-        normalized.contains("gemini3flashpreview")
-    val isGemini31FlashLite = normalized.contains("gemini31flashlite")
 
     return when (purpose) {
         AutomaticModelPurpose.Chat -> when {
-            normalized.contains("gpt55") -> 0
-            normalized.contains("gpt54") -> 1
-            normalized.contains("claude") && normalized.contains("opus") && normalized.contains("47") -> 2
-            normalized.contains("claude") && normalized.contains("sonnet") && normalized.contains("46") -> 3
-            isGemini31Pro -> 4
-            isGemini3Flash -> 5
+            normalized.contains("claude") &&
+                (normalized.contains("fable5") || normalized.contains("5fable")) -> 0
+            normalized.contains("gpt56") && normalized.contains("sol") -> 1
+            normalized.contains("gpt56") && normalized.contains("terra") -> 2
+            normalized.contains("claude") && normalized.contains("opus") && normalized.contains("48") -> 3
+            normalized.contains("claude") &&
+                (normalized.contains("sonnet5") || normalized.contains("5sonnet")) -> 4
+            normalized.contains("gemini35flash") -> 5
+            normalized.contains("grok45") -> 6
+            normalized.contains("gemini31pro") -> 7
+            normalized.contains("kimik3") -> 8
+            normalized.contains("deepseek") && normalized.contains("v4") &&
+                normalized.contains("pro") -> 9
+            normalized.contains("deepseek") && normalized.contains("v4") &&
+                normalized.contains("flash") -> 10
+            normalized.contains("glm52") -> 11
+            normalized.contains("musespark11") -> 12
             else -> null
         }
 
         AutomaticModelPurpose.Title,
-        AutomaticModelPurpose.Naming,
-        AutomaticModelPurpose.Compacting -> when {
-            isGemini3Flash -> 0
-            isGemini31FlashLite -> 1
+        AutomaticModelPurpose.Naming -> when {
+            normalized.contains("gemini31flashlite") -> 0
+            normalized.contains("gpt56luna") -> 1
             normalized.contains("gpt54mini") -> 2
-            normalized.contains("claude") && normalized.contains("haiku") && normalized.contains("46") -> 3
-            normalized.contains("gpt54") -> 4
-            normalized.contains("claude") && normalized.contains("sonnet") -> 5
+            normalized.contains("claude45haiku") ||
+                (normalized.contains("claude") && normalized.contains("haiku45")) -> 3
+            normalized.contains("mini") ||
+                normalized.contains("haiku") ||
+                normalized.contains("lite") -> 4
+            else -> null
+        }
+
+        AutomaticModelPurpose.Compacting -> when {
+            normalized.contains("gemini35flash") -> 0
+            normalized.contains("gpt56luna") -> 1
+            normalized.contains("claude45haiku") ||
+                (normalized.contains("claude") && normalized.contains("haiku45")) -> 2
+            normalized.contains("gemini31flashlite") -> 3
             else -> null
         }
     }

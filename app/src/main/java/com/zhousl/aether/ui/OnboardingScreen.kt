@@ -99,6 +99,7 @@ import com.zhousl.aether.data.PiProviderCatalog
 import com.zhousl.aether.data.PiProviderDefinition
 import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.availableModelOptions
+import com.zhousl.aether.data.automaticModelPriority
 import com.zhousl.aether.data.findModelOption
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.data.RootSetupIssue
@@ -2251,18 +2252,7 @@ internal fun prioritizedModelOptions(
 }
 
 private fun preferredModelRank(model: String): Int {
-    val normalized = model
-        .trim()
-        .lowercase()
-        .replace(Regex("[^a-z0-9]+"), "-")
-        .trim('-')
-    return when {
-        normalized.contains("gpt-5-6") -> 0
-        normalized.contains("claude") &&
-            (normalized.contains("fable") || normalized.contains("opus")) -> 1
-        normalized.contains("gemini-3-") || normalized.endsWith("gemini-3") -> 2
-        else -> 10
-    }
+    return automaticModelPriority(model, AutomaticModelPurpose.Chat) ?: Int.MAX_VALUE
 }
 
 private fun List<String>.withAutomaticChatModelFirst(

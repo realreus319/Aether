@@ -30,12 +30,12 @@ class OnboardingScreenTest {
     fun prioritizedModelsReorderOnlyFetchedPreferredFamilies() {
         assertEquals(
             listOf(
-                "openai/gpt-5.6-sol",
                 "claude-fable-5",
+                "openai/gpt-5.6-sol",
                 "claude-opus-4-8",
+                "claude-sonnet-5",
                 "gemini-3.5-flash",
                 "gpt-4.1",
-                "claude-sonnet-5",
                 "gemini-2.5-pro",
             ),
             prioritizedModelOptions(

@@ -174,6 +174,7 @@ import com.zhousl.aether.data.normalizeOldCommandHistoryRetentionHours
 import com.zhousl.aether.data.normalizeTavilyBaseUrl
 import com.zhousl.aether.data.quickActionLabel
 import com.zhousl.aether.data.resolveAutomaticModelKey
+import com.zhousl.aether.data.sortedForAutomaticModelPurpose
 import com.zhousl.aether.mod.AetherNativeModState
 import com.zhousl.aether.runtime.LocalRuntimeIssue
 import com.zhousl.aether.runtime.LocalRuntimeSetupState
@@ -884,6 +885,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_chat_model_subtitle),
                 selectedKey = defaultChatModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Chat,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat)
                 )?.fullLabel?.let { stringResource(R.string.settings_automatic_model_with_name, it) }
@@ -898,6 +900,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_title_model_subtitle),
                 selectedKey = defaultTitleModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Title,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Title)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -913,6 +916,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_naming_model_subtitle),
                 selectedKey = defaultNamingModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Naming,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Naming)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -928,6 +932,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_compacting_model_subtitle),
                 selectedKey = defaultCompactingModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Compacting,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Compacting)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -2601,22 +2606,26 @@ private fun ModelSelectionListPage(
     subtitle: String,
     selectedKey: String,
     options: List<ProviderModelOption>,
+    purpose: AutomaticModelPurpose,
     automaticLabel: String,
     automaticSubtitle: String,
     onSelected: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val selectedOption = options.findModelOption(selectedKey)
+    val sortedOptions = remember(options, purpose) {
+        options.sortedForAutomaticModelPurpose(purpose)
+    }
     var searchQuery by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
     }
     val trimmedSearchQuery = searchQuery.text.trim()
-    val filteredOptions = remember(options, trimmedSearchQuery) {
+    val filteredOptions = remember(sortedOptions, trimmedSearchQuery) {
         if (trimmedSearchQuery.isBlank()) {
-            options
+            sortedOptions
         } else {
             val needle = trimmedSearchQuery.lowercase()
-            options.filter { option ->
+            sortedOptions.filter { option ->
                 option.fullLabel.contains(needle, ignoreCase = true) ||
                     option.modelId.contains(needle, ignoreCase = true) ||
                     option.providerName.contains(needle, ignoreCase = true) ||

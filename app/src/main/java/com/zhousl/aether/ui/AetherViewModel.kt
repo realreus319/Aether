@@ -64,6 +64,7 @@ import com.zhousl.aether.data.serializeMcpServerConfigs
 import com.zhousl.aether.data.serializeProviderConfigs
 import com.zhousl.aether.data.toJson
 import com.zhousl.aether.data.toJsonArray
+import com.zhousl.aether.data.withExplicitDefaultChatModel
 import com.zhousl.aether.data.LlmMessage
 import com.zhousl.aether.data.LlmTextPart
 import com.zhousl.aether.data.ProviderAuthMethod
@@ -1219,9 +1220,9 @@ class AetherViewModel(
             val enabledConfig = config.copy(isEnabled = true)
             settingsRepository.upsertProviderConfig(enabledConfig)
             settingsRepository.setProviderEnabled(enabledConfig.id, true)
-            val defaultModelKey = listOf(enabledConfig)
-                .availableModelOptions()
-                .resolveAutomaticModelKey(AutomaticModelPurpose.Chat)
+            val updatedSettings = _uiState.value.settings.withExplicitDefaultChatModel(enabledConfig)
+            val defaultModelKey = updatedSettings.defaultChatModelKey
+            settingsRepository.updateSettings(updatedSettings)
             settingsRepository.updateOnboardingSeenVersion(CurrentOnboardingVersion)
             _uiState.update { current ->
                 current.copy(
