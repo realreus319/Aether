@@ -5,6 +5,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -33,6 +34,45 @@ internal suspend fun OkHttpClient.postJson(
     headers: Map<String, String> = emptyMap(),
 ): JSONObject {
     val request = Request.Builder().url(url).post(json.toString().toRequestBody(JsonMediaType)).apply {
+        headers.forEach { (name, value) -> header(name, value) }
+    }.build()
+    return newCall(request).awaitResponse().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) error("HTTP ${response.code}: ${body.take(300)}")
+        if (body.isBlank()) JSONObject() else JSONObject(body)
+    }
+}
+
+internal suspend fun OkHttpClient.getText(
+    url: String,
+    headers: Map<String, String> = emptyMap(),
+): String {
+    val request = Request.Builder().url(url).get().apply {
+        headers.forEach { (name, value) -> header(name, value) }
+    }.build()
+    return newCall(request).awaitResponse().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) error("HTTP ${response.code}: ${body.take(300)}")
+        body
+    }
+}
+
+internal suspend fun OkHttpClient.getJson(
+    url: String,
+    headers: Map<String, String> = emptyMap(),
+): JSONObject = getText(url, headers).let { body ->
+    if (body.isBlank()) JSONObject() else JSONObject(body)
+}
+
+internal suspend fun OkHttpClient.postForm(
+    url: String,
+    fields: Map<String, String>,
+    headers: Map<String, String> = emptyMap(),
+): JSONObject {
+    val form = FormBody.Builder().apply {
+        fields.forEach { (name, value) -> add(name, value) }
+    }.build()
+    val request = Request.Builder().url(url).post(form).apply {
         headers.forEach { (name, value) -> header(name, value) }
     }.build()
     return newCall(request).awaitResponse().use { response ->

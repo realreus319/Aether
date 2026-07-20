@@ -350,6 +350,7 @@ private fun AetherAppContent(
     }
     val channelConfigs = appRuntime.channelConfigRepository.configs.collectAsStateWithLifecycle().value
     val channelStatuses = appRuntime.channelManager.statuses.collectAsStateWithLifecycle().value
+    val channelBindingStates = appRuntime.channelQrAuthManager.states.collectAsStateWithLifecycle().value
     val workspaceFileBridge = appRuntime.workspaceFileBridge
     val runtimeWorkspaceFileBridge = appRuntime.runtimeWorkspaceFileBridge
     val activeSession = uiState.sessions.firstOrNull { it.id == uiState.currentSessionId }
@@ -928,7 +929,10 @@ private fun AetherAppContent(
                     appUpdate = uiState.appUpdate,
                     channelConfigs = channelConfigs,
                     channelStatuses = channelStatuses,
+                    channelBindingStates = channelBindingStates,
                     onUpsertChannelConfig = appRuntime.channelConfigRepository::upsert,
+                    onStartChannelBinding = appRuntime.channelQrAuthManager::start,
+                    onCancelChannelBinding = appRuntime.channelQrAuthManager::cancel,
                     onSave = viewModel::saveSettings,
                     onUpdateLanguage = { language ->
                         viewModel.updateAppLanguage(language)

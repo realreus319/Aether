@@ -30,6 +30,7 @@ import com.zhousl.aether.data.WebToolsClient
 import com.zhousl.aether.data.WorkspaceFileBridge
 import com.zhousl.aether.channel.ChannelConfigRepository
 import com.zhousl.aether.channel.ChannelManager
+import com.zhousl.aether.channel.ChannelQrAuthManager
 import com.zhousl.aether.data.pi.PiCompletionClient
 import com.zhousl.aether.data.pi.PiAgentRunner
 import com.zhousl.aether.data.pi.PiKernelBridge
@@ -234,6 +235,10 @@ class AetherAppRuntime(
         onKeepAliveRequired = { required ->
             if (required) runCatching { AetherForegroundService.ensureRunning(application) }
         },
+    )
+    val channelQrAuthManager = ChannelQrAuthManager(
+        scope = appScope,
+        configRepository = channelConfigRepository,
     )
 
     fun initialize() {
