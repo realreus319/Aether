@@ -10,6 +10,14 @@ import org.junit.Test
 
 class ProviderModelCatalogClientTest {
     @Test
+    fun thinkingCatalogKeyUsesOnlyLastModelIdSegment() {
+        assertEquals(
+            "openrouter/gpt-5.6-sol",
+            thinkingCatalogKey("openrouter", "openai/gpt-5.6-sol"),
+        )
+    }
+
+    @Test
     fun thinkingLevelsUsePiCatalogResults() {
         assertEquals(emptyList<String>(), supportedThinkingLevels(JSONArray()))
         assertEquals(

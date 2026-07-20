@@ -23,6 +23,9 @@ internal fun piThinkingLevelClamps(clamps: JSONObject): Map<String, String> =
         clamps.optString(level).takeIf { it in PiThinkingLevels }?.let { level to it }
     }.toMap()
 
+internal fun thinkingCatalogKey(providerId: String, modelId: String): String =
+    "${providerId.trim()}/${modelId.substringAfterLast('/').trim()}"
+
 object ProviderModelCatalogClient {
 
     data class FetchModelsResult(

@@ -161,6 +161,7 @@ import com.zhousl.aether.data.ProviderModelOption
 import com.zhousl.aether.data.SessionExecutionState
 import com.zhousl.aether.data.SessionFollowUpMode
 import com.zhousl.aether.data.quickActionLabel
+import com.zhousl.aether.data.thinkingCatalogKey
 import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.ui.theme.AetherBackground
 import com.zhousl.aether.ui.theme.AetherBackgroundGradientTop
@@ -937,10 +938,10 @@ private fun ConversationModelSelector(
     val menuWidth = 242.dp
     val selectedOption = options.firstOrNull { it.key == menuSelectedModelKey } ?: options.firstOrNull()
     val supportedThinkingLevels = selectedOption?.let { option ->
-        thinkingLevelsByProviderModel["${option.piProviderId}/${option.modelId}"]
+        thinkingLevelsByProviderModel[thinkingCatalogKey(option.piProviderId, option.modelId)]
     }.orEmpty()
     val effectiveReasoningEffort = selectedOption?.let { option ->
-        thinkingLevelClampsByProviderModel["${option.piProviderId}/${option.modelId}"]
+        thinkingLevelClampsByProviderModel[thinkingCatalogKey(option.piProviderId, option.modelId)]
             ?.get(reasoningEffort)
     } ?: reasoningEffort
     val fallbackLabel = stringResource(R.string.chat_select_model)

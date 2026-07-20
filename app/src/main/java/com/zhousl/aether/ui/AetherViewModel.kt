@@ -27,6 +27,7 @@ import com.zhousl.aether.data.InstalledSkill
 import com.zhousl.aether.data.InstalledPiExtension
 import com.zhousl.aether.data.PiExtensionCatalogEntry
 import com.zhousl.aether.data.ProviderModelCatalogClient
+import com.zhousl.aether.data.thinkingCatalogKey
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.ModelCatalogClient
 import com.zhousl.aether.data.LocalRuntimeId
@@ -2227,7 +2228,7 @@ class AetherViewModel(
         val option = current.providerConfigs.availableModelOptions()
             .firstOrNull { it.key == modelKey }
             ?: return onResolved(false)
-        val cacheKey = "${option.piProviderId.trim()}/${option.modelId.trim()}"
+        val cacheKey = thinkingCatalogKey(option.piProviderId, option.modelId)
         current.thinkingLevelsByProviderModel[cacheKey]?.let { levels ->
             onResolved(levels.isNotEmpty())
             return
@@ -2254,15 +2255,24 @@ class AetherViewModel(
                 state.copy(
                     thinkingLevelsByProviderModel = state.thinkingLevelsByProviderModel +
                         result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                     thinkingLevelClampsByProviderModel = state.thinkingLevelClampsByProviderModel +
                         result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                 )
             }
-            onResolved(result.thinkingLevelsByModel[option.modelId].orEmpty().isNotEmpty())
+            val selectedModelId = option.modelId.substringAfterLast('/').trim()
+            onResolved(
+                result.thinkingLevelsByModel.entries
+                    .firstOrNull { (modelId, _) ->
+                        modelId.substringAfterLast('/').trim() == selectedModelId
+                    }
+                    ?.value
+                    .orEmpty()
+                    .isNotEmpty(),
+            )
         }
     }
 
@@ -2293,11 +2303,11 @@ class AetherViewModel(
                 state.copy(
                     thinkingLevelsByProviderModel = state.thinkingLevelsByProviderModel +
                         result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                     thinkingLevelClampsByProviderModel = state.thinkingLevelClampsByProviderModel +
                         result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                 )
             }
@@ -2319,11 +2329,11 @@ class AetherViewModel(
                     isFetchingModels = false,
                     thinkingLevelsByProviderModel = current.thinkingLevelsByProviderModel +
                         result.thinkingLevelsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                     thinkingLevelClampsByProviderModel = current.thinkingLevelClampsByProviderModel +
                         result.thinkingLevelClampsByModel.mapKeys { (modelId, _) ->
-                            "${config.piProviderId.trim()}/${modelId.trim()}"
+                            thinkingCatalogKey(config.piProviderId, modelId)
                         },
                 )
             }
