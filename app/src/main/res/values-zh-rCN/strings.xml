@@ -1,5 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="common_show_password">显示密码</string>
+    <string name="common_hide_password">隐藏密码</string>
     <string name="app_name">Aether</string>
 
     <!-- Common -->
@@ -341,7 +343,7 @@
     <string name="settings_treat_termux_as_ready">将 Termux 视为已就绪</string>
     <string name="settings_termux_ready_toggle_subtitle">开启 = 已就绪。关闭 = 未就绪。</string>
     <string name="settings_replay_follow_up_tour">重播后续引导</string>
-    <string name="settings_replay_follow_up_tour_description">从路线选择开始，然后依次经过本地配置、Tavily、技能和 MCP。</string>
+    <string name="settings_replay_follow_up_tour_description">从路线选择开始，然后依次经过本地配置和 Tavily。</string>
     <string name="settings_replay_second_part">重播第二部分</string>
     <string name="settings_update_downloading_percent">正在下载 %1$d%%</string>
     <string name="settings_update_downloading">正在下载更新</string>
@@ -504,6 +506,7 @@
     <string name="provider_form_api_key">API Key</string>
     <string name="provider_form_base_url">基础 URL</string>
     <string name="provider_form_manual_model_ids">手动模型 ID</string>
+    <string name="provider_form_user_agent">User-Agent</string>
     <string name="provider_form_model_picker_api_key_hint">已启用的模型会显示在聊天模型选择器中。刷新模型目录前，请先配置 API Key 认证。</string>
     <string name="provider_form_model_picker_refresh_hint">已启用的模型会显示在聊天模型选择器中。刷新会从提供方 API 加载模型。</string>
     <string name="provider_form_choose_provider">选择提供方</string>
@@ -630,23 +633,6 @@
     <string name="onboarding_or_type_your_own_model">或者输入你自己的模型</string>
     <string name="onboarding_welcome_title">欢迎使用 Aether</string>
     <string name="onboarding_welcome_subtitle">在设备上运行、可与一切协作的智能体。</string>
-    <string name="onboarding_skills_message">之后你可以添加技能，让 Aether 记住你喜欢的可复用工作流。</string>
-    <string name="onboarding_skills_title">技能</string>
-    <string name="onboarding_skills_not_needed">现在不需要也没关系。</string>
-    <string name="onboarding_skills_installed_count">已经安装了 %1$d 个技能。</string>
-    <string name="onboarding_skills_line_two">它们可以用来放提示词、检查项和模板。</string>
-    <string name="onboarding_skill_chip_prompts">提示词</string>
-    <string name="onboarding_skill_chip_checks">检查项</string>
-    <string name="onboarding_skill_chip_templates">模板</string>
-    <string name="onboarding_mcp_title">MCP</string>
-    <string name="onboarding_mcp_message">如果之后你想接入实时文档、搜索或 API，可以在设置里连接 MCP 服务器。</string>
-    <string name="onboarding_mcp_later">这一步也可以留到以后。</string>
-    <string name="onboarding_mcp_available_count">已经有 %1$d 个 MCP 服务器可用。</string>
-    <string name="onboarding_mcp_line_two">这里是 Aether 超出本地工具能力的入口。</string>
-    <string name="onboarding_chip_docs">文档</string>
-    <string name="onboarding_chip_search">搜索</string>
-    <string name="onboarding_chip_apis">APIs</string>
-    <string name="onboarding_open_settings">打开设置</string>
     <string name="onboarding_provider_auth_message">首先，选择你已有的认证方式。</string>
     <string name="onboarding_provider_pick_message">现在选择一个支持该认证方式的提供方。</string>
     <string name="onboarding_provider_search_placeholder">搜索提供方</string>
@@ -779,6 +765,38 @@
     <string name="tool_title_captured_agent_mode_display">已截取 Agent 模式显示</string>
     <string name="tool_title_using_agent_mode_display">正在使用 Agent 模式显示</string>
     <string name="tool_title_used_agent_mode_display">已使用 Agent 模式显示</string>
+    <string name="tool_title_starting_chrome">正在启动 Chrome</string>
+    <string name="tool_title_started_chrome">已启动 Chrome</string>
+    <string name="tool_title_navigating_chrome">正在 Chrome 中打开页面</string>
+    <string name="tool_title_navigated_chrome">已在 Chrome 中打开页面</string>
+    <string name="tool_title_navigating_chrome_url">正在 Chrome 中打开 %1$s</string>
+    <string name="tool_title_navigated_chrome_url">已在 Chrome 中打开 %1$s</string>
+    <string name="tool_title_checking_chrome">正在检查 Chrome 状态</string>
+    <string name="tool_title_checked_chrome">已检查 Chrome 状态</string>
+    <string name="tool_title_tapping_chrome">正在点击 Chrome</string>
+    <string name="tool_title_tapped_chrome">已点击 Chrome</string>
+    <string name="tool_title_scrolling_chrome">正在滚动 Chrome</string>
+    <string name="tool_title_scrolled_chrome">已滚动 Chrome</string>
+    <string name="tool_title_typing_chrome">正在 Chrome 中输入文本</string>
+    <string name="tool_title_typed_chrome">已在 Chrome 中输入文本</string>
+    <string name="tool_title_pressing_chrome_key">正在 Chrome 中按下 %1$s</string>
+    <string name="tool_title_pressed_chrome_key">已在 Chrome 中按下 %1$s</string>
+    <string name="tool_title_pressing_chrome">正在 Chrome 中按键</string>
+    <string name="tool_title_pressed_chrome">已在 Chrome 中按键</string>
+    <string name="tool_title_going_back_chrome">正在 Chrome 中后退</string>
+    <string name="tool_title_went_back_chrome">已在 Chrome 中后退</string>
+    <string name="tool_title_going_forward_chrome">正在 Chrome 中前进</string>
+    <string name="tool_title_went_forward_chrome">已在 Chrome 中前进</string>
+    <string name="tool_title_reloading_chrome">正在刷新 Chrome 页面</string>
+    <string name="tool_title_reloaded_chrome">已刷新 Chrome 页面</string>
+    <string name="tool_title_evaluating_chrome">正在 Chrome 中执行 JavaScript</string>
+    <string name="tool_title_evaluated_chrome">已在 Chrome 中执行 JavaScript</string>
+    <string name="tool_title_capturing_chrome">正在截取 Chrome</string>
+    <string name="tool_title_captured_chrome">已截取 Chrome</string>
+    <string name="tool_title_stopping_chrome">正在停止 Chrome</string>
+    <string name="tool_title_stopped_chrome">已停止 Chrome</string>
+    <string name="tool_title_using_chrome">正在使用 Chrome</string>
+    <string name="tool_title_used_chrome">已使用 Chrome</string>
     <string name="settings_alpine_subtitle_ready">内置 Linux 虚拟机已就绪</string>
     <string name="settings_alpine_subtitle_setup">内置 Linux 虚拟机配置</string>
     <string name="settings_runtime_defaults">运行环境默认值</string>
@@ -793,6 +811,17 @@
     <string name="settings_live_command_output_description">在 Termux 命令仍在运行时，在工具卡片中显示 bash stdout 和 stderr 快照。</string>
     <string name="settings_alpine_description">Aether 的内置 Linux 环境位于应用私有目录，和 Termux 相互独立。它适合 shell 脚本、开发工具，以及不需要操作手机侧能力的 stdio MCP。</string>
     <string name="settings_open_terminal">打开终端</string>
+    <string name="settings_open_chrome">打开 Chrome</string>
+    <string name="settings_chrome_environment">Chrome 浏览器</string>
+    <string name="chrome_label">Chrome</string>
+    <string name="chat_ask_chrome">使用 Chrome 询问</string>
+    <string name="chat_chrome_preview_pending">浏览器启动后会显示 Chrome 预览。</string>
+    <string name="chrome_address_hint">搜索或输入网址</string>
+    <string name="chrome_vnc_unavailable">Chrome 显示暂不可用，请点击刷新重试。</string>
+    <string name="settings_profile_downloading_rate">下载中 %1$s</string>
+    <string name="settings_profile_extracting_rate">解压中 %1$s</string>
+    <string name="settings_profile_installing_percent">安装中 %1$s</string>
+    <string name="settings_profile_processing_rate">处理中 %1$s</string>
     <string name="settings_runtime_status">运行环境状态</string>
     <string name="settings_ready">已就绪</string>
     <string name="settings_initialize">初始化</string>

@@ -23,6 +23,9 @@ internal fun piThinkingLevelClamps(clamps: JSONObject): Map<String, String> =
         clamps.optString(level).takeIf { it in PiThinkingLevels }?.let { level to it }
     }.toMap()
 
+internal fun thinkingCatalogKey(providerId: String, modelId: String): String =
+    "${providerId.trim()}/${modelId.substringAfterLast('/').trim()}"
+
 object ProviderModelCatalogClient {
 
     data class FetchModelsResult(
@@ -41,7 +44,7 @@ object ProviderModelCatalogClient {
             val definition = PiProviderCatalog.resolve(
                 config.piProviderId,
             )
-            if (definition.isBuiltIn && !config.usesCustomOpenAiCompatibleBaseUrl()) {
+            if (!shouldFetchModelsFromEndpoint(config, definition)) {
                 return@withContext fetchPiBuiltinModels(
                     definition = definition,
                     piKernelBridge = piKernelBridge,
@@ -116,15 +119,21 @@ object ProviderModelCatalogClient {
         return FetchModelsResult(emptyList(), "Provider ${definition.id} is unavailable.")
     }
 
-    private fun LlmProviderConfig.usesCustomOpenAiCompatibleBaseUrl(): Boolean {
-        val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
-        return piProviderId == "openai" &&
+    internal fun shouldFetchModelsFromEndpoint(
+        config: LlmProviderConfig,
+        definition: PiProviderDefinition = PiProviderCatalog.resolve(config.piProviderId),
+    ): Boolean {
+        if (!definition.isBuiltIn) return true
+        if (definition.id == "openai" && config.authMethod == ProviderAuthMethod.ApiKey) return true
+
+        val normalizedBaseUrl = config.baseUrl.trim().trimEnd('/')
+        return definition.id == "openai" &&
             normalizedBaseUrl.isNotBlank() &&
-            normalizedBaseUrl != PiProviderCatalog.resolve("openai").defaultBaseUrl
+            normalizedBaseUrl != definition.defaultBaseUrl
     }
 
     private fun fetchOpenAiModels(config: LlmProviderConfig): FetchModelsResult {
-        val baseUrl = config.baseUrl.trimEnd('/')
+        val baseUrl = config.baseUrl.trim().trimEnd('/')
         val modelsUrl = when {
             baseUrl.endsWith("/responses") -> baseUrl.replace("/responses", "/models")
             baseUrl.endsWith("/chat/completions") -> baseUrl.replace("/chat/completions", "/models")
@@ -136,7 +145,7 @@ object ProviderModelCatalogClient {
         connection.requestMethod = "GET"
         connection.setRequestProperty("Authorization", "Bearer ${config.apiKey}")
         connection.setRequestProperty("Content-Type", "application/json")
-        connection.applyAetherLlmHeaders(config.customHeaders)
+        connection.applyAetherLlmHeaders(config.userAgent, config.customHeaders)
         connection.connectTimeout = 15_000
         connection.readTimeout = 30_000
 
@@ -155,12 +164,12 @@ object ProviderModelCatalogClient {
                         }
                     }
                 }
-                // Sort models: prefer chat/gpt models first
-                models.sortWith(compareBy(
-                    { if (it.contains("gpt") || it.contains("chat")) 0 else 1 },
-                    { it }
-                ))
-                FetchModelsResult(models)
+                FetchModelsResult(
+                    models
+                        .map(String::trim)
+                        .filter(String::isNotBlank)
+                        .distinctBy { it.lowercase() },
+                )
             } else {
                 val errorText = connection.errorStream?.bufferedReader()?.readText() ?: "HTTP ${connection.responseCode}"
                 FetchModelsResult(emptyList(), errorText)

@@ -68,10 +68,24 @@ fun resolveDefaultCompactingModelKey(
         options = options,
         purpose = AutomaticModelPurpose.Compacting,
         fallbackPurpose = AutomaticModelPurpose.Chat,
-        preferredAutomaticModelKey = options
-            .filter { it.piProviderId == "openai" || it.piProviderId == "openai-codex" }
-            .resolveAutomaticModelKey(AutomaticModelPurpose.Compacting),
     )
+}
+
+fun AppSettings.withExplicitDefaultChatModel(
+    providerConfig: LlmProviderConfig,
+): AppSettings {
+    val selectedModelId = providerConfig.modelId.trim()
+    if (selectedModelId.isBlank()) return this
+    val selectableConfig = providerConfig.copy(
+        isEnabled = true,
+        cachedModels = providerConfig.cachedModels + selectedModelId,
+        enabledModelIds = providerConfig.enabledModelIds + selectedModelId,
+    )
+    val selectedOption = listOf(selectableConfig)
+        .availableModelOptions()
+        .firstOrNull { it.modelId == selectedModelId }
+        ?: return this
+    return withModelOption(selectedOption).copy(defaultChatModelKey = selectedOption.key)
 }
 
 fun resolveModelSettings(

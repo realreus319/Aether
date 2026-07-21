@@ -89,9 +89,9 @@ This project is being developed sporadically by a 9th-grade student during their
 
 <a href="https://www.star-history.com/?repos=Zhou-Shilin%2FAether&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&theme=dark&legend=top-left&sealed_token=EU5gsuVcs_Ravu88uM-u6K0mIGb0JVSVe65e7hxAoH_ZncZr6UgJy4gc1g-EF61t1btQdTyt7Nyo89r9dQvgFzXlIL8P9ebP6orOqbiVMs7vueE4DyTGaIWho_-VEiLYzE6mW76DqgnU00qG0i_JZmFL08ZPdWMRv0hEkUK9NQi_fBuUMqSOqYQNCMO6" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&legend=top-left&sealed_token=EU5gsuVcs_Ravu88uM-u6K0mIGb0JVSVe65e7hxAoH_ZncZr6UgJy4gc1g-EF61t1btQdTyt7Nyo89r9dQvgFzXlIL8P9ebP6orOqbiVMs7vueE4DyTGaIWho_-VEiLYzE6mW76DqgnU00qG0i_JZmFL08ZPdWMRv0hEkUK9NQi_fBuUMqSOqYQNCMO6" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Zhou-Shilin/Aether&type=date&legend=top-left&sealed_token=EU5gsuVcs_Ravu88uM-u6K0mIGb0JVSVe65e7hxAoH_ZncZr6UgJy4gc1g-EF61t1btQdTyt7Nyo89r9dQvgFzXlIL8P9ebP6orOqbiVMs7vueE4DyTGaIWho_-VEiLYzE6mW76DqgnU00qG0i_JZmFL08ZPdWMRv0hEkUK9NQi_fBuUMqSOqYQNCMO6" />
  </picture>
 </a>
 

@@ -15,7 +15,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,11 +45,12 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -85,6 +85,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -96,6 +99,7 @@ import com.zhousl.aether.data.PiProviderCatalog
 import com.zhousl.aether.data.PiProviderDefinition
 import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.availableModelOptions
+import com.zhousl.aether.data.automaticModelPriority
 import com.zhousl.aether.data.findModelOption
 import com.zhousl.aether.data.resolveAutomaticModelKey
 import com.zhousl.aether.data.RootSetupIssue
@@ -142,8 +146,6 @@ private val FollowUpOnboardingSteps = listOf(
     OnboardingStep.TermuxSetup,
     OnboardingStep.AgentModeAuthorization,
     OnboardingStep.TavilySetup,
-    OnboardingStep.SkillsOverview,
-    OnboardingStep.McpOverview,
 )
 
 private val TourBackground: Color
@@ -190,8 +192,6 @@ fun OnboardingScreen(
     rootSetupState: RootSetupState,
     agentModeAuthorizationMethod: AgentModeAuthorizationMethod,
     tavilyApiKey: String,
-    installedSkillCount: Int,
-    mcpServerCount: Int,
     setupPreviewMode: Boolean = false,
     onFetchModels: (LlmProviderConfig, (List<String>) -> Unit) -> Unit,
     onStartProviderLogin: (String, String, ProviderAuthMethod, String) -> Unit,
@@ -213,7 +213,6 @@ fun OnboardingScreen(
     onConfigureWithRoot: () -> Unit,
     onSaveAgentModeAuthorization: (Boolean, AgentModeAuthorizationMethod) -> Unit,
     onCompleteFollowUp: () -> Unit,
-    onExploreSettings: () -> Unit,
 ) {
 
     var currentStep by rememberSaveable(initialStep, replayMode) {
@@ -388,56 +387,8 @@ fun OnboardingScreen(
                     if (trimmed.isNotBlank()) {
                         onSaveTavilyApiKey(trimmed)
                     }
-                    currentStep = OnboardingStep.SkillsOverview
+                    onCompleteFollowUp()
                 },
-            )
-
-            OnboardingStep.SkillsOverview -> SummaryStep(
-                stepIndex = stepIndex,
-                stepCount = steps.size,
-                message = stringResource(R.string.onboarding_skills_message),
-                title = stringResource(R.string.onboarding_skills_title),
-                icon = Icons.Rounded.Extension,
-                accent = TourGold,
-                lineOne = if (installedSkillCount == 0) {
-                    stringResource(R.string.onboarding_skills_not_needed)
-                } else {
-                    stringResource(R.string.onboarding_skills_installed_count, installedSkillCount)
-                },
-                lineTwo = stringResource(R.string.onboarding_skills_line_two),
-                chips = listOf(stringResource(R.string.onboarding_skill_chip_prompts), stringResource(R.string.onboarding_skill_chip_checks), stringResource(R.string.onboarding_skill_chip_templates)),
-                primaryLabel = stringResource(R.string.common_continue),
-                onPrimary = { currentStep = OnboardingStep.McpOverview },
-                secondaryLabel = stringResource(R.string.common_back),
-                onSecondary = { currentStep = OnboardingStep.TavilySetup },
-                onClose = onClose,
-            )
-
-            OnboardingStep.McpOverview -> SummaryStep(
-                stepIndex = stepIndex,
-                stepCount = steps.size,
-                message = stringResource(R.string.onboarding_mcp_message),
-                title = stringResource(R.string.onboarding_mcp_title),
-                icon = Icons.Rounded.Cloud,
-                accent = TourBlue,
-                lineOne = if (mcpServerCount == 0) {
-                    stringResource(R.string.onboarding_mcp_later)
-                } else {
-                    stringResource(R.string.onboarding_mcp_available_count, mcpServerCount)
-                },
-                lineTwo = stringResource(R.string.onboarding_mcp_line_two),
-                chips = listOf(
-                    stringResource(R.string.onboarding_chip_docs),
-                    stringResource(R.string.onboarding_chip_search),
-                    stringResource(R.string.onboarding_chip_apis),
-                ),
-                primaryLabel = stringResource(R.string.common_done),
-                onPrimary = onCompleteFollowUp,
-                secondaryLabel = stringResource(R.string.onboarding_open_settings),
-                onSecondary = onExploreSettings,
-                tertiaryLabel = stringResource(R.string.common_back),
-                onTertiary = { currentStep = OnboardingStep.SkillsOverview },
-                onClose = onClose,
             )
         }
     }
@@ -692,6 +643,13 @@ private fun ProviderSetupStep(
     }
     var isFinishing by rememberSaveable(stepIndex, replayMode) { mutableStateOf(false) }
     var providerSearch by rememberSaveable(stepIndex, replayMode) { mutableStateOf("") }
+    var customModelValue by rememberSaveable(
+        stepIndex,
+        replayMode,
+        stateSaver = TextFieldValue.Saver,
+    ) {
+        mutableStateOf(TextFieldValue())
+    }
     val selectedAuthMethod = ProviderAuthMethod.valueOf(selectedAuthMethodName)
     val definition = formState.selectedDefinition
     val isLoadingModels = formState.isFetchingModelsLocally || isFetchingModels
@@ -871,11 +829,17 @@ private fun ProviderSetupStep(
                                         piProviderId = definition.id,
                                         cachedModels = models,
                                     )
-                                    formState.cachedModels = ordered
+                                    formState.cachedModels = models
+                                        .map(String::trim)
+                                        .filter(String::isNotBlank)
+                                        .distinctBy { it.lowercase() }
                                     formState.enabledModelIds = ordered
                                     if (ordered.isNotEmpty()) {
                                         formState.modelId = ordered.first()
+                                    } else {
+                                        formState.modelId = ""
                                     }
+                                    customModelValue = TextFieldValue()
                                     formState.isFetchingModelsLocally = false
                                     stage = ProviderTourStage.Model
                                 }
@@ -905,6 +869,7 @@ private fun ProviderSetupStep(
                                     selected = formState.modelId.trim().equals(model, ignoreCase = true),
                                     onClick = {
                                         formState.modelId = model
+                                        customModelValue = TextFieldValue()
                                         formState.enabledModelIds = (listOf(model) + formState.enabledModelIds)
                                             .map(String::trim)
                                             .filter(String::isNotEmpty)
@@ -913,18 +878,15 @@ private fun ProviderSetupStep(
                                 )
                             }
                         }
-                        MinimalInputField(
+                        MinimalTextFieldValueInput(
                             label = stringResource(R.string.onboarding_model),
-                            value = if (modelChoices.any { it.equals(formState.modelId.trim(), ignoreCase = true) }) {
-                                ""
-                            } else {
-                                formState.modelId
-                            },
+                            value = customModelValue,
                             placeholder = stringResource(R.string.onboarding_or_type_your_own_model),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                             onValueChange = { value ->
-                                formState.modelId = value
-                                val trimmed = value.trim()
+                                customModelValue = value
+                                formState.modelId = value.text
+                                val trimmed = value.text.trim()
                                 if (trimmed.isNotEmpty()) {
                                     formState.enabledModelIds = (listOf(trimmed) + formState.enabledModelIds)
                                         .map(String::trim)
@@ -1689,86 +1651,14 @@ private fun TavilyStep(
                 label = stringResource(R.string.onboarding_api_key),
                 value = value,
                 placeholder = stringResource(R.string.onboarding_paste_it_here),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                isSecret = true,
                 onValueChange = onValueChange,
             )
             PrimaryActionButton(
-                label = stringResource(R.string.common_continue),
+                label = stringResource(R.string.common_done),
                 onClick = onContinue,
             )
-        }
-    }
-}
-
-@Composable
-private fun SummaryStep(
-    stepIndex: Int,
-    stepCount: Int,
-    message: String,
-    title: String,
-    icon: ImageVector,
-    accent: Color,
-    lineOne: String,
-    lineTwo: String,
-    chips: List<String>,
-    primaryLabel: String,
-    onPrimary: () -> Unit,
-    secondaryLabel: String? = null,
-    onSecondary: (() -> Unit)? = null,
-    tertiaryLabel: String? = null,
-    onTertiary: (() -> Unit)? = null,
-    onClose: () -> Unit,
-) {
-
-    ConversationStepPage(
-        stepIndex = stepIndex,
-        stepCount = stepCount,
-        message = message,
-        onBack = onTertiary,
-        topRightLabel = stringResource(R.string.common_close),
-        onTopRight = onClose,
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            StepLead(
-                icon = icon,
-                accent = accent,
-                title = title,
-                body = lineOne,
-            )
-            Text(
-                text = lineTwo,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TourTextSecondary,
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                chips.forEach { chip ->
-                    PassiveChip(label = chip)
-                }
-            }
-            PrimaryActionButton(
-                label = primaryLabel,
-                onClick = onPrimary,
-            )
-            if (secondaryLabel != null && onSecondary != null) {
-                SecondaryTextAction(
-                    label = secondaryLabel,
-                    onClick = onSecondary,
-                )
-            }
-            if (tertiaryLabel != null && onTertiary != null) {
-                SecondaryTextAction(
-                    label = tertiaryLabel,
-                    onClick = onTertiary,
-                    color = TourTextSecondary,
-                )
-            }
         }
     }
 }
@@ -2088,30 +1978,93 @@ private fun ModelOptionButton(
 }
 
 @Composable
-private fun PassiveChip(
-    label: String,
-) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(TourSurface)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = TourTextPrimary,
-        )
-    }
-}
-
-@Composable
 private fun MinimalInputField(
     label: String,
     value: String,
     placeholder: String,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    isSecret: Boolean = false,
     onValueChange: (String) -> Unit,
+) {
+    var passwordVisible by rememberSaveable(label) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = TourTextSecondary,
+        )
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(TourSurface)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .tourBringIntoViewOnFocus(),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = TourTextPrimary),
+            cursorBrush = SolidColor(TourTextPrimary),
+            singleLine = true,
+            keyboardOptions = keyboardOptions,
+            visualTransformation = if (isSecret && !passwordVisible) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
+            decorationBox = { innerTextField ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (value.isBlank()) {
+                            Text(
+                                text = placeholder,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = TourTextTertiary,
+                            )
+                        }
+                        innerTextField()
+                    }
+                    if (isSecret) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.common_hide_password
+                                    } else {
+                                        R.string.common_show_password
+                                    }
+                                ),
+                                tint = TourTextSecondary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun MinimalTextFieldValueInput(
+    label: String,
+    value: TextFieldValue,
+    placeholder: String,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    onValueChange: (TextFieldValue) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2127,18 +2080,17 @@ private fun MinimalInputField(
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(TourSurface)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .tourBringIntoViewOnFocus(),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = TourTextPrimary),
             cursorBrush = SolidColor(TourTextPrimary),
             singleLine = true,
             keyboardOptions = keyboardOptions,
             decorationBox = { innerTextField ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 10.dp),
-                ) {
-                    if (value.isBlank()) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (value.text.isBlank()) {
                         Text(
                             text = placeholder,
                             style = MaterialTheme.typography.bodyLarge,
@@ -2282,43 +2234,15 @@ private fun messageRevealDuration(message: String): Long {
     return total.coerceIn(MessageMinDurationMillis, MessageMaxDurationMillis)
 }
 
-private fun prioritizedModelOptions(
+internal fun prioritizedModelOptions(
     piProviderId: String?,
     cachedModels: List<String>,
 ): List<String> {
-    val fallback = when (piProviderId) {
-        "openai",
-        "openai-codex" -> listOf(
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-        )
-
-        "anthropic" -> listOf(
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        )
-
-        "google",
-        "google-vertex" -> listOf(
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
-        )
-
-        else -> listOf(
-            "gpt-5.5",
-            "gpt-5.4",
-            "claude-4.6-sonnet",
-            "gemini-3-flash",
-            "gemini-3.1-pro",
-        )
-    }
-    val orderedModels = (cachedModels + fallback)
+    val fetchedModels = cachedModels
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinctBy { it.lowercase() }
+    val orderedModels = fetchedModels
         .sortedWith(
             compareBy<String> { preferredModelRank(it) }
                 .thenBy { providerModelRank(piProviderId, it) }
@@ -2328,15 +2252,7 @@ private fun prioritizedModelOptions(
 }
 
 private fun preferredModelRank(model: String): Int {
-    val normalized = model.lowercase()
-    return when {
-        normalized.contains("gpt-5.5") -> 0
-        normalized.contains("gpt-5.4") -> 1
-        normalized.contains("gemini-3-flash") || normalized.contains("gemini 3 flash") -> 2
-        normalized.contains("gemini-3.1-pro") || normalized.contains("gemini 3.1 pro") -> 3
-        normalized.contains("claude-4.6-sonnet") || normalized.contains("claude 4.6 sonnet") -> 4
-        else -> 10
-    }
+    return automaticModelPriority(model, AutomaticModelPurpose.Chat) ?: Int.MAX_VALUE
 }
 
 private fun List<String>.withAutomaticChatModelFirst(
@@ -2359,6 +2275,7 @@ private fun List<String>.withAutomaticChatModelFirst(
     val automaticModel = options.findModelOption(
         options.resolveAutomaticModelKey(AutomaticModelPurpose.Chat)
     )?.modelId ?: return this
+    if (preferredModelRank(automaticModel) > preferredModelRank(first())) return this
     return (listOf(automaticModel) + filterNot { it.equals(automaticModel, ignoreCase = true) })
         .distinctBy { it.lowercase() }
 }

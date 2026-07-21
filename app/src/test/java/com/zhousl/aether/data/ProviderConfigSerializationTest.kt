@@ -193,6 +193,7 @@ class ProviderConfigSerializationTest {
                     apiKey = "test-key",
                     baseUrl = "https://openrouter.ai/api/v1",
                     modelId = "openai/gpt-test",
+                    userAgent = "OpenRouterClient/2.0",
                     customHeaders = listOf(
                         LlmCustomHeader("HTTP-Referer", "https://example.com"),
                         LlmCustomHeader("X-Title", "Aether"),
@@ -207,7 +208,43 @@ class ProviderConfigSerializationTest {
         assertEquals("https://example.com", config.customHeaders[0].value)
         assertEquals("X-Title", config.customHeaders[1].name)
         assertEquals("Aether", config.customHeaders[1].value)
+        assertEquals("OpenRouterClient/2.0", config.userAgent)
+        assertEquals(
+            "OpenRouterClient/2.0",
+            listOf(config).availableModelOptions().single().userAgent,
+        )
         assertEquals(config.customHeaders, listOf(config).availableModelOptions().single().customHeaders)
+    }
+
+    @Test
+    fun legacyUserAgentCustomHeaderMigratesToDedicatedField() {
+        val config = parseProviderConfigs(
+            JSONArray().put(
+                JSONObject()
+                    .put("providerId", "custom")
+                    .put("name", "Custom")
+                    .put("piProviderId", "openai-compatible")
+                    .put("baseUrl", "https://api.example.com/v1")
+                    .put("modelId", "model")
+                    .put(
+                        "customHeaders",
+                        JSONArray()
+                            .put(
+                                JSONObject()
+                                    .put("name", "User-Agent")
+                                    .put("value", "LegacyClient/1.0")
+                            )
+                            .put(
+                                JSONObject()
+                                    .put("name", "X-Test")
+                                    .put("value", "yes")
+                            )
+                    )
+            ).toString()
+        ).single()
+
+        assertEquals("LegacyClient/1.0", config.userAgent)
+        assertEquals(listOf(LlmCustomHeader("X-Test", "yes")), config.customHeaders)
     }
 
     @Test

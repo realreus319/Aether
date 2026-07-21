@@ -120,6 +120,7 @@ data class AppSettings(
     val providerEnvironmentVariables: List<PiProviderEnvironmentVariable> = emptyList(),
     val baseUrl: String = DefaultCustomProviderBaseUrl,
     val modelId: String = DefaultCustomModelId,
+    val userAgent: String = AetherLlmUserAgent,
     val customHeaders: List<LlmCustomHeader> = emptyList(),
     val reasoningEffort: String = DefaultReasoningEffort,
     val systemPrompt: String = "You are Aether, a local-first Android agent that can call tools and complete tasks on-device. Use available tools instead of guessing local state.",
@@ -276,6 +277,7 @@ data class LlmProviderConfig(
     val providerEnvironmentVariables: List<PiProviderEnvironmentVariable> = emptyList(),
     val modelId: String,
     val manualModelIds: List<String> = listOf(modelId).filter(String::isNotBlank),
+    val userAgent: String = AetherLlmUserAgent,
     val customHeaders: List<LlmCustomHeader> = emptyList(),
     val cachedModels: List<String> = emptyList(),
     val enabledModelIds: List<String> = cachedModels + manualModelIds,
@@ -306,6 +308,7 @@ internal fun LlmProviderConfig.toJson(): JSONObject = JSONObject().apply {
     )
     put("baseUrl", baseUrl)
     put("modelId", modelId)
+    put("userAgent", normalizeLlmUserAgent(userAgent))
     put("manualModelIds", JSONArray().apply { manualModelIds.forEach(::put) })
     put("customHeaders", customHeaders.toJsonArray())
     put("cachedModels", JSONArray().apply { cachedModels.forEach(::put) })
@@ -351,6 +354,16 @@ internal fun parseProviderConfigs(rawValue: String): List<LlmProviderConfig> {
                     }
                 )
                 val availableModels = normalizeStringList(cachedModels + manualModelIds)
+                val parsedCustomHeaders = parseCustomHeaders(json.optJSONArray("customHeaders"))
+                val userAgent = if (json.has("userAgent")) {
+                    normalizeLlmUserAgent(json.optString("userAgent"))
+                } else {
+                    normalizeLlmUserAgent(
+                        parsedCustomHeaders.firstOrNull {
+                            it.name.equals("User-Agent", ignoreCase = true)
+                        }?.value
+                    )
+                }
                 val inferredProviderId = providerName
                     .sanitizeProviderId()
                     .ifBlank { "${providerDefinition.id.sanitizeProviderId()}_${index + 1}" }
@@ -372,7 +385,10 @@ internal fun parseProviderConfigs(rawValue: String): List<LlmProviderConfig> {
                         baseUrl = baseUrl,
                         modelId = modelId,
                         manualModelIds = manualModelIds,
-                        customHeaders = parseCustomHeaders(json.optJSONArray("customHeaders")),
+                        userAgent = userAgent,
+                        customHeaders = parsedCustomHeaders.filterNot {
+                            it.name.equals("User-Agent", ignoreCase = true)
+                        },
                         cachedModels = cachedModels,
                         enabledModelIds = if (json.has("enabledModelIds")) {
                             normalizeStringList(enabledModelIds.filter(availableModels::contains))
@@ -495,6 +511,7 @@ data class ProviderModelOption(
     val providerEnvironmentVariables: List<PiProviderEnvironmentVariable>,
     val baseUrl: String,
     val modelId: String,
+    val userAgent: String,
     val customHeaders: List<LlmCustomHeader>,
     val fullLabel: String,
     val chatLabel: String,
@@ -546,6 +563,7 @@ fun List<LlmProviderConfig>.availableModelOptions(
                 providerEnvironmentVariables = config.providerEnvironmentVariables,
                 baseUrl = config.baseUrl.trim(),
                 modelId = normalizedModelId,
+                userAgent = normalizeLlmUserAgent(config.userAgent),
                 customHeaders = config.customHeaders,
                 fullLabel = fullLabel,
                 chatLabel = if ((modelCounts[normalizedModelId] ?: 0) > 1) fullLabel else normalizedModelId,
@@ -570,6 +588,7 @@ fun AppSettings.withModelOption(option: ProviderModelOption): AppSettings = copy
     providerEnvironmentVariables = option.providerEnvironmentVariables,
     baseUrl = option.baseUrl.trim(),
     modelId = option.modelId.trim(),
+    userAgent = normalizeLlmUserAgent(option.userAgent),
     customHeaders = option.customHeaders,
 )
 
@@ -588,36 +607,63 @@ fun List<ProviderModelOption>.resolveAutomaticModelKey(
     return rankedOption?.key ?: firstOrNull()?.key.orEmpty()
 }
 
-private fun automaticModelPriority(
+fun List<ProviderModelOption>.sortedForAutomaticModelPurpose(
+    purpose: AutomaticModelPurpose,
+): List<ProviderModelOption> = sortedWith(
+    compareBy<ProviderModelOption> {
+        automaticModelPriority(it.modelId, purpose) ?: Int.MAX_VALUE
+    }
+        .thenBy { it.providerId }
+        .thenBy { it.modelId }
+)
+
+internal fun automaticModelPriority(
     modelId: String,
     purpose: AutomaticModelPurpose,
 ): Int? {
     val normalized = modelId.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "")
-    val isGemini31Pro = normalized.contains("gemini31pro")
-    val isGemini3Flash = Regex("gemini3(?:0)?flash").containsMatchIn(normalized) ||
-        normalized.contains("gemini3flashpreview")
-    val isGemini31FlashLite = normalized.contains("gemini31flashlite")
 
     return when (purpose) {
         AutomaticModelPurpose.Chat -> when {
-            normalized.contains("gpt55") -> 0
-            normalized.contains("gpt54") -> 1
-            normalized.contains("claude") && normalized.contains("opus") && normalized.contains("47") -> 2
-            normalized.contains("claude") && normalized.contains("sonnet") && normalized.contains("46") -> 3
-            isGemini31Pro -> 4
-            isGemini3Flash -> 5
+            normalized.contains("claude") &&
+                (normalized.contains("fable5") || normalized.contains("5fable")) -> 0
+            normalized.contains("gpt56") && normalized.contains("sol") -> 1
+            normalized.contains("gpt56") && normalized.contains("terra") -> 2
+            normalized.contains("claude") && normalized.contains("opus") && normalized.contains("48") -> 3
+            normalized.contains("claude") &&
+                (normalized.contains("sonnet5") || normalized.contains("5sonnet")) -> 4
+            normalized.contains("gemini35flash") -> 5
+            normalized.contains("grok45") -> 6
+            normalized.contains("gemini31pro") -> 7
+            normalized.contains("kimik3") -> 8
+            normalized.contains("deepseek") && normalized.contains("v4") &&
+                normalized.contains("pro") -> 9
+            normalized.contains("deepseek") && normalized.contains("v4") &&
+                normalized.contains("flash") -> 10
+            normalized.contains("glm52") -> 11
+            normalized.contains("musespark11") -> 12
             else -> null
         }
 
         AutomaticModelPurpose.Title,
-        AutomaticModelPurpose.Naming,
-        AutomaticModelPurpose.Compacting -> when {
-            isGemini3Flash -> 0
-            isGemini31FlashLite -> 1
+        AutomaticModelPurpose.Naming -> when {
+            normalized.contains("gemini31flashlite") -> 0
+            normalized.contains("gpt56luna") -> 1
             normalized.contains("gpt54mini") -> 2
-            normalized.contains("claude") && normalized.contains("haiku") && normalized.contains("46") -> 3
-            normalized.contains("gpt54") -> 4
-            normalized.contains("claude") && normalized.contains("sonnet") -> 5
+            normalized.contains("claude45haiku") ||
+                (normalized.contains("claude") && normalized.contains("haiku45")) -> 3
+            normalized.contains("mini") ||
+                normalized.contains("haiku") ||
+                normalized.contains("lite") -> 4
+            else -> null
+        }
+
+        AutomaticModelPurpose.Compacting -> when {
+            normalized.contains("gemini35flash") -> 0
+            normalized.contains("gpt56luna") -> 1
+            normalized.contains("claude45haiku") ||
+                (normalized.contains("claude") && normalized.contains("haiku45")) -> 2
+            normalized.contains("gemini31flashlite") -> 3
             else -> null
         }
     }

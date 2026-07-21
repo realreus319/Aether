@@ -1,5 +1,6 @@
 package com.zhousl.aether.ui
 
+import com.zhousl.aether.data.AetherLlmUserAgent
 import com.zhousl.aether.data.LlmProviderConfig
 import com.zhousl.aether.data.PiProviderCatalog
 import com.zhousl.aether.data.PiProviderEnvironmentVariable
@@ -97,7 +98,19 @@ class ProviderConfigFormTest {
 
         assertEquals("", state.modelId)
         assertEquals("", state.buildConfig().modelId)
+        assertEquals(AetherLlmUserAgent, state.userAgent)
         assertTrue(state.isValid(emptySet()))
+    }
+
+    @Test
+    fun buildConfigKeepsCustomUserAgentAndRestoresDefaultWhenBlank() {
+        val state = ProviderFormState.fromConfig(null)
+
+        state.userAgent = "  CustomAgent/4.0  "
+        assertEquals("CustomAgent/4.0", state.buildConfig().userAgent)
+
+        state.userAgent = ""
+        assertEquals(AetherLlmUserAgent, state.buildConfig().userAgent)
     }
 
     @Test

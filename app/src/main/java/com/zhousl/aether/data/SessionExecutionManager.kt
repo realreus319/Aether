@@ -97,6 +97,7 @@ data class SessionTurnRequest(
     val activeSkills: List<ActiveSkillContext>,
     val activeMcpServerIds: List<String>,
     val agentModeEnabled: Boolean,
+    val chromeEnabled: Boolean,
     val providerConfigs: List<LlmProviderConfig> = emptyList(),
 )
 
@@ -451,6 +452,7 @@ class SessionExecutionManager(
         var activeSkills: List<ActiveSkillContext> = emptyList()
         var activeMcpServerIds: List<String> = emptyList()
         var agentModeEnabled = false
+        var chromeEnabled = false
 
         val persistedSessionWithMessages = chatRepository.getSessionWithMessages(sessionId)
 
@@ -479,6 +481,7 @@ class SessionExecutionManager(
             activeSkills = updatedSession.activeSkills
             activeMcpServerIds = updatedSession.activeMcpServerIds
             agentModeEnabled = updatedSession.agentModeEnabled
+            chromeEnabled = updatedSession.chromeEnabled
             updatedSessions.add(0, updatedSession)
             persisted.copy(
                 sessions = updatedSessions,
@@ -500,6 +503,7 @@ class SessionExecutionManager(
                 activeSkills = activeSkills,
                 activeMcpServerIds = activeMcpServerIds,
                 agentModeEnabled = agentModeEnabled,
+                chromeEnabled = chromeEnabled,
                 providerConfigs = providerConfigs,
             )
         )
@@ -701,6 +705,7 @@ class SessionExecutionManager(
                 mcpClientManager = mcpClientManager,
                 selfManagementTool = selfManagementTool,
                 agentModeEnabled = request.agentModeEnabled,
+                chromeEnabled = request.chromeEnabled,
                 providerConfigs = request.providerConfigs,
                 sessionId = handle.sessionId,
                 onToolEvent = emitToolEvent,
@@ -1520,6 +1525,10 @@ class SessionExecutionManager(
         request.agentModeEnabled && !request.settings.agentModeAuthorizationEnabled ->
                 "Agent Mode is selected, but authorization is disabled. Enable it in Settings > Agent Mode first."
 
+        request.chromeEnabled &&
+            request.settings.alpinePackageProfiles["chrome"]?.installed != true ->
+                "Chrome is selected, but it is not installed. Install it in Settings > Alpine first."
+
         else -> validateSettings(request.settings)
     }
 
@@ -1588,6 +1597,24 @@ class SessionExecutionManager(
         settings: AppSettings,
     ): List<LlmContentPart> {
         if (attachment.workspacePath.isBlank()) {
+            if (
+                attachment.kind == AttachmentKind.Image &&
+                attachment.mimeType.startsWith("image/") &&
+                attachment.inlineBase64.isNotBlank()
+            ) {
+                return listOf(
+                    LlmTextPart(
+                        "Visual attachment:\n" +
+                            "Name: ${attachment.name}\n" +
+                            "Type: ${attachment.mimeType}\n" +
+                            "This image is attached directly to the model request and has no workspace copy."
+                    ),
+                    LlmImagePart(
+                        mimeType = attachment.mimeType,
+                        base64Data = attachment.inlineBase64,
+                    ),
+                )
+            }
             return listOf(LlmTextPart(
                 "Attached file '${attachment.name}' is missing a workspace path. Ask the user to re-upload it if you need to inspect the file."
             ))

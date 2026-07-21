@@ -4,6 +4,7 @@ import com.zhousl.aether.data.AppSettings
 import com.zhousl.aether.data.LlmCustomHeader
 import com.zhousl.aether.data.LlmTokenUsage
 import com.zhousl.aether.data.PiProviderCatalog
+import com.zhousl.aether.data.normalizeLlmUserAgent
 import com.zhousl.aether.data.normalizeReasoningEffort
 import com.zhousl.aether.data.ProviderAuthMethod
 import org.json.JSONObject
@@ -107,7 +108,8 @@ fun AppSettings.toPiModelConfig(): PiModelConfig {
         } else {
             ""
         },
-        customHeaders = customHeaders.toPiHeaderMap(),
+        customHeaders = customHeaders.toPiHeaderMap() +
+            ("User-Agent" to normalizeLlmUserAgent(userAgent)),
         reasoning = false,
         timeoutMillis = llmInactivityReconnectTimeoutSeconds
             .coerceIn(30, 3_600) * 1_000,

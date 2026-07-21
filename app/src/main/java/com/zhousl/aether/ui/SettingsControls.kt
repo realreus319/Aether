@@ -58,6 +58,8 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -100,8 +102,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.zhousl.aether.BuildConfig
@@ -296,9 +299,10 @@ internal fun ChatGptTextField(
     value: TextFieldValue,
     minLines: Int = 1,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
-    visualTransformation: VisualTransformation = VisualTransformation.None,
+    isSecret: Boolean = false,
     onValueChange: (TextFieldValue) -> Unit,
 ) {
+    var passwordVisible by rememberSaveable(label) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -320,17 +324,48 @@ internal fun ChatGptTextField(
             cursorBrush = SolidColor(AetherPrimary),
             minLines = minLines,
             keyboardOptions = keyboardOptions,
-            visualTransformation = visualTransformation,
+            visualTransformation = if (isSecret && !passwordVisible) {
+                PasswordVisualTransformation()
+            } else {
+                VisualTransformation.None
+            },
             decorationBox = { innerTextField ->
-                Box {
-                    if (value.text.isEmpty()) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
-                        )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (value.text.isEmpty()) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
+                    if (isSecret) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.common_hide_password
+                                    } else {
+                                        R.string.common_show_password
+                                    }
+                                ),
+                                tint = AetherOnSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
             },
         )

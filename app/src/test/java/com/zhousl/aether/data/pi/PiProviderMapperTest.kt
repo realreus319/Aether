@@ -1,6 +1,7 @@
 package com.zhousl.aether.data.pi
 
 import com.zhousl.aether.data.AppSettings
+import com.zhousl.aether.data.AetherLlmUserAgent
 import com.zhousl.aether.data.LlmCustomHeader
 import com.zhousl.aether.data.LlmImagePart
 import com.zhousl.aether.data.LlmMessage
@@ -140,8 +141,10 @@ class PiProviderMapperTest {
             apiKey = "custom-key",
             baseUrl = "https://example.test/v1",
             modelId = "custom-model",
+            userAgent = "CustomAgent/3.0",
             customHeaders = listOf(
                 LlmCustomHeader("X-Test", "yes"),
+                LlmCustomHeader("User-Agent", "ignored"),
                 LlmCustomHeader(" ", "ignored"),
             ),
         ).toPiModelConfig()
@@ -149,13 +152,28 @@ class PiProviderMapperTest {
         assertEquals("custom", config.providerType)
         assertTrue(config.piProviderId.startsWith("aether-"))
         assertEquals("openai-completions", config.piApi)
-        assertEquals(mapOf("X-Test" to "yes"), config.customHeaders)
+        assertEquals(
+            mapOf(
+                "X-Test" to "yes",
+                "User-Agent" to "CustomAgent/3.0",
+            ),
+            config.customHeaders,
+        )
         assertEquals("custom-model", config.modelId)
         assertFalse(config.reasoning)
         assertEquals("off", AppSettings(
             piProviderId = "openai-compatible",
             modelId = "custom-model",
         ).toPiThinkingLevel())
+        assertEquals(
+            AetherLlmUserAgent,
+            AppSettings(
+                piProviderId = "openai-compatible",
+                providerConfigId = "default-agent",
+                baseUrl = "https://example.test/v1",
+                modelId = "custom-model",
+            ).toPiModelConfig().customHeaders["User-Agent"],
+        )
     }
 
     @Test

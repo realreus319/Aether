@@ -746,6 +746,7 @@ private fun ChatSession.toSessionEntity(sortOrder: Long): ChatSessionEntity = Ch
     activeSkillsJson = serializeActiveSkillContexts(activeSkills),
     activeMcpServerIdsJson = JSONArray().apply { activeMcpServerIds.forEach(::put) }.toString(),
     agentModeEnabled = agentModeEnabled,
+    chromeEnabled = chromeEnabled,
     selectedModelKey = selectedModelKey,
     sortOrder = sortOrder,
 )
@@ -805,6 +806,7 @@ private fun ChatSessionEntity.toChatSession(
         activeSkills = activeSkills,
         activeMcpServerIds = parseStringList(activeMcpServerIdsJson),
         agentModeEnabled = agentModeEnabled,
+        chromeEnabled = chromeEnabled,
         selectedModelKey = selectedModelKey,
     )
 }
@@ -846,6 +848,7 @@ internal fun parseChatSessionsForMigration(rawValue: String): LegacyChatSessions
                             activeSkills = parseActiveSkillContexts(session.optString("activeSkillsJson")),
                             activeMcpServerIds = parseStringList(session.optJSONArray("activeMcpServerIds")),
                             agentModeEnabled = session.optBoolean("agentModeEnabled", false),
+                            chromeEnabled = session.optBoolean("chromeEnabled", false),
                             selectedModelKey = session.optString("selectedModelKey"),
                         )
                     )
@@ -896,6 +899,7 @@ internal fun ChatSession.toJson(): JSONObject = JSONObject().apply {
     put("preview", preview)
     put("hasCustomTitle", hasCustomTitle)
     put("agentModeEnabled", agentModeEnabled)
+    put("chromeEnabled", chromeEnabled)
     put("selectedModelKey", selectedModelKey)
     put("selectedSkillIds", JSONArray().apply { selectedSkillIds.forEach(::put) })
     put("messages", JSONArray().apply { syncActiveBranches(messages).forEach { put(it.toJson()) } })
@@ -1043,6 +1047,12 @@ private fun parseAttachments(attachments: JSONArray?): List<ChatAttachment> {
             val attachment = attachments.optJSONObject(attachmentIndex) ?: continue
             val mimeType = attachment.optString("mimeType")
             val workspacePath = attachment.optString("workspacePath")
+            val inlineBase64 = attachment.optString("inlineBase64")
+            val kind = AttachmentKind.fromStored(
+                value = attachment.optString("kind"),
+                mimeType = mimeType,
+            )
+            val hasVisualFallback = kind == AttachmentKind.Image && inlineBase64.isNotBlank()
             add(
                 ChatAttachment(
                     id = attachment.optString("id").ifBlank { "attachment-$attachmentIndex" },
@@ -1050,22 +1060,19 @@ private fun parseAttachments(attachments: JSONArray?): List<ChatAttachment> {
                     name = attachment.optString("name").ifBlank { "Attachment ${attachmentIndex + 1}" },
                     mimeType = mimeType,
                     sizeBytes = if (attachment.has("sizeBytes")) attachment.optLong("sizeBytes") else null,
-                    kind = AttachmentKind.fromStored(
-                        value = attachment.optString("kind"),
-                        mimeType = mimeType,
-                    ),
+                    kind = kind,
                     workspacePath = workspacePath,
-                    workspaceState = if (workspacePath.isBlank()) {
+                    workspaceState = if (workspacePath.isBlank() && !hasVisualFallback) {
                         AttachmentWorkspaceState.Failed
                     } else {
                         AttachmentWorkspaceState.Ready
                     },
-                    workspaceError = if (workspacePath.isBlank()) {
+                    workspaceError = if (workspacePath.isBlank() && !hasVisualFallback) {
                         "This attachment is missing its workspace copy."
                     } else {
                         ""
                     },
-                    inlineBase64 = attachment.optString("inlineBase64"),
+                    inlineBase64 = inlineBase64,
                 )
             )
         }

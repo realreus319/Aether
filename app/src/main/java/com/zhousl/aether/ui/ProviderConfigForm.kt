@@ -36,6 +36,8 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -82,6 +84,7 @@ import com.zhousl.aether.data.PiProviderEnvironmentVariable
 import com.zhousl.aether.data.ProviderAuthMethod
 import com.zhousl.aether.data.defaultAuthMethod
 import com.zhousl.aether.data.isValidProviderId
+import com.zhousl.aether.data.normalizeLlmUserAgent
 import com.zhousl.aether.data.sanitizeProviderId
 import com.zhousl.aether.data.pi.PiOAuthPrompt
 import com.zhousl.aether.data.pi.PiProviderAuthState
@@ -114,6 +117,7 @@ class ProviderFormState internal constructor(
     providerEnvironmentVariables: List<PiProviderEnvironmentVariable>,
     baseUrl: String,
     modelId: String,
+    userAgent: String,
     customHeaders: List<LlmCustomHeader>,
     cachedModels: List<String>,
     enabledModelIds: List<String>,
@@ -129,6 +133,7 @@ class ProviderFormState internal constructor(
     var providerEnvironmentVariables by mutableStateOf(providerEnvironmentVariables)
     var baseUrl by mutableStateOf(baseUrl)
     var modelId by mutableStateOf(modelId)
+    var userAgent by mutableStateOf(userAgent)
     var customHeaders by mutableStateOf(customHeaders)
     var cachedModels by mutableStateOf(cachedModels)
     var enabledModelIds by mutableStateOf(enabledModelIds)
@@ -353,9 +358,13 @@ class ProviderFormState internal constructor(
         baseUrl = baseUrl.trim(),
         modelId = effectiveModelId,
         manualModelIds = manualModelIds,
+        userAgent = normalizeLlmUserAgent(userAgent),
         customHeaders = customHeaders
             .map { header -> LlmCustomHeader(header.name.trim(), header.value) }
-            .filter { header -> header.name.isNotBlank() },
+            .filter { header ->
+                header.name.isNotBlank() &&
+                    !header.name.equals("User-Agent", ignoreCase = true)
+            },
         cachedModels = normalizeModelIds(cachedModels),
         enabledModelIds = enabledModelIds
             .map(String::trim)
@@ -396,6 +405,7 @@ class ProviderFormState internal constructor(
                 providerEnvironmentVariables = existingConfig?.providerEnvironmentVariables.orEmpty(),
                 baseUrl = existingConfig?.baseUrl ?: initialDefinition.defaultBaseUrl,
                 modelId = initialManualModels.joinToString("\n"),
+                userAgent = normalizeLlmUserAgent(existingConfig?.userAgent),
                 customHeaders = existingConfig?.customHeaders.orEmpty(),
                 cachedModels = existingConfig?.cachedModels.orEmpty(),
                 enabledModelIds = initialEnabledModels,
@@ -571,6 +581,12 @@ fun ProviderConfigurationForm(
                 onAddVariable = state::addProviderEnvironmentVariable,
                 onUpdateVariable = state::updateProviderEnvironmentVariable,
                 onRemoveVariable = state::removeProviderEnvironmentVariable,
+            )
+            ProviderFormDivider()
+            ProviderFormTextField(
+                label = stringResource(R.string.provider_form_user_agent),
+                value = state.userAgent,
+                onValueChange = { state.userAgent = it },
             )
             ProviderFormDivider()
             ProviderCustomHeadersField(
@@ -1218,6 +1234,12 @@ fun AddProviderWizard(
                             onRemoveVariable = state::removeProviderEnvironmentVariable,
                         )
                         ProviderFormDivider()
+                        ProviderFormTextField(
+                            label = stringResource(R.string.provider_form_user_agent),
+                            value = state.userAgent,
+                            onValueChange = { state.userAgent = it },
+                        )
+                        ProviderFormDivider()
                         ProviderCustomHeadersField(
                             headers = state.customHeaders,
                             onAddHeader = state::addCustomHeader,
@@ -1433,6 +1455,7 @@ private fun providerFormStateSaver(
             state.providerEnvironmentVariables.map { listOf(it.name, it.value) },
             state.baseUrl,
             state.modelId,
+            state.userAgent,
             state.customHeaders.map { listOf(it.name, it.value) },
             state.cachedModels,
             state.enabledModelIds,
@@ -1441,6 +1464,12 @@ private fun providerFormStateSaver(
         )
     },
     restore = { restored ->
+        val hasUserAgent = restored.size >= 13
+        val customHeadersIndex = if (hasUserAgent) 8 else 7
+        val cachedModelsIndex = if (hasUserAgent) 9 else 8
+        val enabledModelIdsIndex = if (hasUserAgent) 10 else 9
+        val manuallyEditedIndex = if (hasUserAgent) 11 else 10
+        val autoProviderIdIndex = if (hasUserAgent) 12 else 11
         val restoredEnvironmentVariables =
             (restored[4] as List<*>).mapNotNull { item ->
                 val values = item as? List<*> ?: return@mapNotNull null
@@ -1449,7 +1478,7 @@ private fun providerFormStateSaver(
                     value = values.getOrNull(1) as? String ?: "",
                 )
             }
-        val restoredCustomHeaders = (restored[7] as List<*>)
+        val restoredCustomHeaders = (restored[customHeadersIndex] as List<*>)
                 .mapNotNull { item ->
                     val values = item as? List<*> ?: return@mapNotNull null
                     LlmCustomHeader(
@@ -1468,12 +1497,17 @@ private fun providerFormStateSaver(
             providerEnvironmentVariables = restoredEnvironmentVariables,
             baseUrl = restored[5] as String,
             modelId = restored[6] as String,
+            userAgent = if (hasUserAgent) {
+                restored[7] as String
+            } else {
+                normalizeLlmUserAgent(existingConfig?.userAgent)
+            },
             customHeaders = restoredCustomHeaders,
-            cachedModels = restored[8] as List<String>,
-            enabledModelIds = restored[9] as List<String>,
-            providerIdManuallyEdited = restored.getOrNull(10) as? Boolean
+            cachedModels = restored[cachedModelsIndex] as List<String>,
+            enabledModelIds = restored[enabledModelIdsIndex] as List<String>,
+            providerIdManuallyEdited = restored.getOrNull(manuallyEditedIndex) as? Boolean
                 ?: (existingConfig != null),
-            lastAutoGeneratedProviderId = restored.getOrNull(11) as? String
+            lastAutoGeneratedProviderId = restored.getOrNull(autoProviderIdIndex) as? String
                 ?: restored[0] as String,
         )
     },
@@ -1540,6 +1574,7 @@ private fun ProviderFormTextField(
     var fieldValue by rememberSaveable(label, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(value, selection = TextRange(value.length)))
     }
+    var passwordVisible by rememberSaveable(label) { mutableStateOf(false) }
 
     LaunchedEffect(value) {
         if (value != fieldValue.text) {
@@ -1570,21 +1605,46 @@ private fun ProviderFormTextField(
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = AetherOnSurface),
             cursorBrush = SolidColor(ProviderFormPrimary),
             keyboardOptions = keyboardOptions,
-            visualTransformation = if (isSecret) {
+            visualTransformation = if (isSecret && !passwordVisible) {
                 PasswordVisualTransformation()
             } else {
                 VisualTransformation.None
             },
             decorationBox = { innerTextField ->
-                Box {
-                    if (fieldValue.text.isEmpty()) {
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (fieldValue.text.isEmpty()) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = AetherOnSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                        innerTextField()
                     }
-                    innerTextField()
+                    if (isSecret) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) {
+                                    Icons.Rounded.VisibilityOff
+                                } else {
+                                    Icons.Rounded.Visibility
+                                },
+                                contentDescription = stringResource(
+                                    if (passwordVisible) {
+                                        R.string.common_hide_password
+                                    } else {
+                                        R.string.common_show_password
+                                    }
+                                ),
+                                tint = AetherOnSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
             },
         )

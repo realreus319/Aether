@@ -78,6 +78,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -160,6 +161,7 @@ import com.zhousl.aether.data.ProviderModelOption
 import com.zhousl.aether.data.SessionExecutionState
 import com.zhousl.aether.data.SessionFollowUpMode
 import com.zhousl.aether.data.quickActionLabel
+import com.zhousl.aether.data.thinkingCatalogKey
 import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.ui.theme.AetherBackground
 import com.zhousl.aether.ui.theme.AetherBackgroundGradientTop
@@ -313,6 +315,9 @@ fun ConversationScreen(
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
     agentModeDisplayState: AgentModeDisplayState,
+    chromeAvailable: Boolean,
+    chromeSelected: Boolean,
+    chromeDisplayState: AgentModeDisplayState,
     allowRootImageRead: Boolean = false,
     isEditing: Boolean,
     termuxSetupState: TermuxSetupState,
@@ -326,6 +331,7 @@ fun ConversationScreen(
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
+    onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
     onSend: () -> Unit,
     onQueueFollowUp: () -> Unit,
@@ -681,6 +687,8 @@ fun ConversationScreen(
                                     activeTurnStartedAtMillis = activeTurnStartedAtMillis,
                                     agentModeSelected = agentModeSelected,
                                     agentModeDisplayState = agentModeDisplayState,
+                                    chromeSelected = chromeSelected,
+                                    chromeDisplayState = chromeDisplayState,
                                     onAttachAgentModePreviewSurface = onAttachAgentModePreviewSurface,
                                     onDetachAgentModePreviewSurface = onDetachAgentModePreviewSurface,
                                 )
@@ -746,6 +754,8 @@ fun ConversationScreen(
                 selectedMcpServerIds = selectedMcpServerIds,
                 agentModeAvailable = agentModeAvailable,
                 agentModeSelected = agentModeSelected,
+                chromeAvailable = chromeAvailable,
+                chromeSelected = chromeSelected,
                 isEditing = isEditing,
                 termuxSetupState = termuxSetupState,
                 isSending = isSending,
@@ -757,6 +767,7 @@ fun ConversationScreen(
                 onSetSkillSelected = onSetSkillSelected,
                 onSetMcpServerSelected = onSetMcpServerSelected,
                 onSetAgentModeSelected = onSetAgentModeSelected,
+                onSetChromeSelected = onSetChromeSelected,
                 onCancelEdit = onCancelEdit,
                 onPickImages = onPickImages,
                 onPickFiles = onPickFiles,
@@ -927,10 +938,10 @@ private fun ConversationModelSelector(
     val menuWidth = 242.dp
     val selectedOption = options.firstOrNull { it.key == menuSelectedModelKey } ?: options.firstOrNull()
     val supportedThinkingLevels = selectedOption?.let { option ->
-        thinkingLevelsByProviderModel["${option.piProviderId}/${option.modelId}"]
+        thinkingLevelsByProviderModel[thinkingCatalogKey(option.piProviderId, option.modelId)]
     }.orEmpty()
     val effectiveReasoningEffort = selectedOption?.let { option ->
-        thinkingLevelClampsByProviderModel["${option.piProviderId}/${option.modelId}"]
+        thinkingLevelClampsByProviderModel[thinkingCatalogKey(option.piProviderId, option.modelId)]
             ?.get(reasoningEffort)
     } ?: reasoningEffort
     val fallbackLabel = stringResource(R.string.chat_select_model)
@@ -1559,18 +1570,30 @@ private fun PendingAssistantTimeline(
     activeTurnStartedAtMillis: Long?,
     agentModeSelected: Boolean,
     agentModeDisplayState: AgentModeDisplayState,
+    chromeSelected: Boolean,
+    chromeDisplayState: AgentModeDisplayState,
     onAttachAgentModePreviewSurface: (Surface) -> Unit,
     onDetachAgentModePreviewSurface: (Surface) -> Unit,
 ) {
-    val visiblePendingInvocations = pendingToolInvocations.filterNot { it.isAgentModeDisplayInvocation() }
+    val visiblePendingInvocations = pendingToolInvocations.filterNot {
+        it.isAgentModeDisplayInvocation() || it.isChromeDisplayInvocation()
+    }
     val blockAgentModeInvocations = blocks.flatMap { it.agentModeToolInvocations() }
     val pendingAgentModeInvocations = pendingToolInvocations.filter { it.isAgentModeDisplayInvocation() }
+    val blockChromeInvocations = blocks.flatMap { it.chromeToolInvocations() }
+    val pendingChromeInvocations = pendingToolInvocations.filter { it.isChromeDisplayInvocation() }
     val agentModePreviewVisible =
         agentModeSelected &&
             agentModeDisplayState.isActive &&
             (blockAgentModeInvocations.isNotEmpty() ||
                 pendingAgentModeInvocations.isNotEmpty() ||
                 agentModeDisplayState.latestPreviewPath.isNotBlank())
+    val chromePreviewVisible =
+        chromeSelected &&
+            (chromeDisplayState.isActive || chromeDisplayState.latestPreviewPath.isNotBlank()) &&
+            (blockChromeInvocations.isNotEmpty() ||
+                pendingChromeInvocations.isNotEmpty() ||
+                chromeDisplayState.latestPreviewPath.isNotBlank())
     val firstAgentModeBlockIndex = blocks.firstAgentModeBlockIndex().let { index ->
         if (index >= 0) index else if (agentModePreviewVisible) blocks.size else -1
     }
@@ -1580,6 +1603,18 @@ private fun PendingAssistantTimeline(
         ""
     }
     if (blocks.isEmpty()) {
+        if (chromePreviewVisible) {
+            AgentModePreviewPanel(
+                displayState = chromeDisplayState,
+                toolInvocation = pendingChromeInvocations.lastOrNull(),
+                label = stringResource(R.string.chrome_label),
+                contentDescription = stringResource(R.string.chrome_label),
+                pendingText = stringResource(R.string.chat_chrome_preview_pending),
+                useLiveSurface = false,
+                onAttachSurface = {},
+                onDetachSurface = {},
+            )
+        }
         if (agentModePreviewVisible) {
             AgentModePreviewPanel(
                 displayState = agentModeDisplayState,
@@ -1591,7 +1626,7 @@ private fun PendingAssistantTimeline(
                 onAttachSurface = onAttachAgentModePreviewSurface,
                 onDetachSurface = onDetachAgentModePreviewSurface,
             )
-        } else if (visiblePendingInvocations.isNotEmpty()) {
+        } else if (!chromePreviewVisible && visiblePendingInvocations.isNotEmpty()) {
             val pendingToolsStartedAtMillis = visiblePendingInvocations
                 .mapNotNull { it.startedAtMillis.takeIf { timestamp -> timestamp > 0L } }
                 .plus(listOfNotNull(activeTurnStartedAtMillis?.takeIf { it > 0L }))
@@ -1628,6 +1663,18 @@ private fun PendingAssistantTimeline(
         return
     }
 
+    if (chromePreviewVisible) {
+        AgentModePreviewPanel(
+            displayState = chromeDisplayState,
+            toolInvocation = (blockChromeInvocations + pendingChromeInvocations).lastOrNull(),
+            label = stringResource(R.string.chrome_label),
+            contentDescription = stringResource(R.string.chrome_label),
+            pendingText = stringResource(R.string.chat_chrome_preview_pending),
+            useLiveSurface = false,
+            onAttachSurface = {},
+            onDetachSurface = {},
+        )
+    }
     if (agentModePreviewVisible) {
         AgentModePreviewPanel(
             displayState = agentModeDisplayState,
@@ -1639,6 +1686,9 @@ private fun PendingAssistantTimeline(
             onAttachSurface = onAttachAgentModePreviewSurface,
             onDetachSurface = onDetachAgentModePreviewSurface,
         )
+        return
+    }
+    if (chromePreviewVisible) {
         return
     }
 
@@ -1785,8 +1835,17 @@ private fun AssistantResponseBlock.agentModeToolInvocations(): List<ChatToolInvo
     is AssistantResponseBlock.Text -> emptyList()
 }
 
+private fun AssistantResponseBlock.chromeToolInvocations(): List<ChatToolInvocation> = when (this) {
+    is AssistantResponseBlock.ToolGroup -> toolInvocations.filter { it.isChromeDisplayInvocation() }
+    is AssistantResponseBlock.Reasoning -> trace.toolInvocations.filter { it.isChromeDisplayInvocation() }
+    is AssistantResponseBlock.Text -> emptyList()
+}
+
 private fun ChatToolInvocation.isAgentModeDisplayInvocation(): Boolean =
     toolName.equals("agent_display", ignoreCase = true)
+
+private fun ChatToolInvocation.isChromeDisplayInvocation(): Boolean =
+    toolName.equals("chrome", ignoreCase = true)
 
 private fun List<AssistantResponseBlock>.firstAgentModeBlockIndex(): Int =
     indexOfFirst { it.agentModeToolInvocations().isNotEmpty() }
@@ -2114,6 +2173,8 @@ private fun ConversationComposerOverlay(
     selectedMcpServerIds: List<String>,
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
+    chromeAvailable: Boolean,
+    chromeSelected: Boolean,
     isEditing: Boolean,
     termuxSetupState: TermuxSetupState,
     isSending: Boolean,
@@ -2125,6 +2186,7 @@ private fun ConversationComposerOverlay(
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
+    onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
@@ -2177,6 +2239,8 @@ private fun ConversationComposerOverlay(
                     selectedMcpServerIds = selectedMcpServerIds,
                     agentModeAvailable = agentModeAvailable,
                     agentModeSelected = agentModeSelected,
+                    chromeAvailable = chromeAvailable,
+                    chromeSelected = chromeSelected,
                     isEditing = isEditing,
                     termuxSetupState = termuxSetupState,
                     isSending = isSending,
@@ -2188,6 +2252,7 @@ private fun ConversationComposerOverlay(
                     onSetSkillSelected = onSetSkillSelected,
                     onSetMcpServerSelected = onSetMcpServerSelected,
                     onSetAgentModeSelected = onSetAgentModeSelected,
+                    onSetChromeSelected = onSetChromeSelected,
                     onCancelEdit = onCancelEdit,
                     onPickImages = onPickImages,
                     onPickFiles = onPickFiles,
@@ -2223,6 +2288,8 @@ private fun ConversationComposerBar(
     selectedMcpServerIds: List<String>,
     agentModeAvailable: Boolean,
     agentModeSelected: Boolean,
+    chromeAvailable: Boolean,
+    chromeSelected: Boolean,
     isEditing: Boolean,
     termuxSetupState: TermuxSetupState,
     isSending: Boolean,
@@ -2234,6 +2301,7 @@ private fun ConversationComposerBar(
     onSetSkillSelected: (String, Boolean) -> Unit,
     onSetMcpServerSelected: (String, Boolean) -> Unit,
     onSetAgentModeSelected: (Boolean) -> Unit,
+    onSetChromeSelected: (Boolean) -> Unit,
     onCancelEdit: () -> Unit,
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
@@ -2271,7 +2339,11 @@ private fun ConversationComposerBar(
     val selectedMcpActions = remember(availableMcpServers, selectedMcpServerSet) {
         availableMcpServers.filter { selectedMcpServerSet.contains(it.id) }
     }
-    val hasSelectedActions = selectedSkillActions.isNotEmpty() || selectedMcpActions.isNotEmpty() || agentModeSelected
+    val hasSelectedActions =
+        selectedSkillActions.isNotEmpty() ||
+            selectedMcpActions.isNotEmpty() ||
+            agentModeSelected ||
+            chromeSelected
     val extensionUiController = LocalAetherExtensionUiController.current
     val hasExtensionActionTray =
         extensionUiController
@@ -2287,7 +2359,9 @@ private fun ConversationComposerBar(
         attachments.isNotEmpty() -> stringResource(R.string.chat_add_note)
         agentModeSelected && selectedSkillActions.isEmpty() && selectedMcpActions.isEmpty() ->
             stringResource(R.string.chat_ask_agent_mode)
-        selectedSkillActions.size + selectedMcpActions.size == 1 && !agentModeSelected -> {
+        chromeSelected && !agentModeSelected && selectedSkillActions.isEmpty() && selectedMcpActions.isEmpty() ->
+            stringResource(R.string.chat_ask_chrome)
+        selectedSkillActions.size + selectedMcpActions.size == 1 && !agentModeSelected && !chromeSelected -> {
             selectedSkillActions.firstOrNull()?.quickActionLabel()
                 ?: selectedMcpActions.firstOrNull()?.quickActionLabel()
                 ?: stringResource(R.string.chat_reply_to_aether)
@@ -2502,9 +2576,11 @@ private fun ConversationComposerBar(
                                 skills = selectedSkillActions,
                                 mcpServers = selectedMcpActions,
                                 agentModeSelected = agentModeSelected,
+                                chromeSelected = chromeSelected,
                                 onRemoveSkill = { skillId -> onSetSkillSelected(skillId, false) },
                                 onRemoveMcpServer = { serverId -> onSetMcpServerSelected(serverId, false) },
                                 onRemoveAgentMode = { onSetAgentModeSelected(false) },
+                                onRemoveChrome = { onSetChromeSelected(false) },
                             )
                         }
                     }
@@ -2727,7 +2803,7 @@ private fun ConversationComposerBar(
                                             runAfterAttachmentMenuDismiss(onPickFiles)
                                         },
                                     )
-                                    if (agentModeAvailable || availableSkills.isNotEmpty() || availableMcpServers.isNotEmpty()) {
+                                    if (agentModeAvailable || chromeAvailable || availableSkills.isNotEmpty() || availableMcpServers.isNotEmpty()) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                     }
                                     if (agentModeAvailable) {
@@ -2740,6 +2816,20 @@ private fun ConversationComposerBar(
                                             onClick = {
                                                 runAfterAttachmentMenuDismiss {
                                                     onSetAgentModeSelected(!agentModeSelected)
+                                                }
+                                            },
+                                        )
+                                    }
+                                    if (chromeAvailable) {
+                                        ComposerPlusMenuRow(
+                                            title = stringResource(R.string.chrome_label),
+                                            icon = Icons.Rounded.Public,
+                                            selected = chromeSelected,
+                                            iconTint = Color(0xFF2F6DA3),
+                                            iconContainerColor = AetherSurfaceHigh,
+                                            onClick = {
+                                                runAfterAttachmentMenuDismiss {
+                                                    onSetChromeSelected(!chromeSelected)
                                                 }
                                             },
                                         )
@@ -2855,9 +2945,11 @@ private fun ComposerActionTray(
     skills: List<InstalledSkill>,
     mcpServers: List<McpServerConfig>,
     agentModeSelected: Boolean,
+    chromeSelected: Boolean,
     onRemoveSkill: (String) -> Unit,
     onRemoveMcpServer: (String) -> Unit,
     onRemoveAgentMode: () -> Unit,
+    onRemoveChrome: () -> Unit,
 ) {
     Row(
         modifier = modifier
@@ -2871,6 +2963,13 @@ private fun ComposerActionTray(
                 label = stringResource(R.string.agent_mode_label),
                 icon = LucideIcons.MousePointer2,
                 onRemove = onRemoveAgentMode,
+            )
+        }
+        if (chromeSelected) {
+            ComposerActionChip(
+                label = stringResource(R.string.chrome_label),
+                icon = Icons.Rounded.Public,
+                onRemove = onRemoveChrome,
             )
         }
         skills.forEach { skill ->
@@ -2898,6 +2997,10 @@ private fun ComposerActionTray(
 private fun AgentModePreviewPanel(
     displayState: AgentModeDisplayState,
     toolInvocation: ChatToolInvocation?,
+    label: String? = null,
+    contentDescription: String? = null,
+    pendingText: String? = null,
+    useLiveSurface: Boolean = true,
     overlayText: String = "",
     workspaceDirectory: String = "",
     allowRootImageRead: Boolean = false,
@@ -2905,6 +3008,11 @@ private fun AgentModePreviewPanel(
     onAttachSurface: (Surface) -> Unit,
     onDetachSurface: (Surface) -> Unit,
 ) {
+    val resolvedLabel = label ?: stringResource(R.string.agent_mode_label)
+    val resolvedContentDescription =
+        contentDescription ?: stringResource(R.string.chat_agent_mode_virtual_display)
+    val resolvedPendingText =
+        pendingText ?: stringResource(R.string.chat_agent_mode_preview_pending)
     val bitmap = remember(displayState.latestPreviewPath, displayState.lastUpdatedMillis) {
         displayState.latestPreviewPath
             .takeIf { it.isNotBlank() }
@@ -2922,7 +3030,11 @@ private fun AgentModePreviewPanel(
         if (toolInvocation != null) {
             AgentModePreviewToolStatus(toolInvocation = toolInvocation)
         } else {
-            AgentModePreviewHeader(displayState = displayState)
+            AgentModePreviewHeader(
+                displayState = displayState,
+                label = resolvedLabel,
+                isChrome = !useLiveSurface,
+            )
         }
         if (displayState.isActive || bitmap != null) {
             Box(
@@ -2958,7 +3070,7 @@ private fun AgentModePreviewPanel(
                     animationSpec = tween(durationMillis = animationDurationMillis, easing = ChatGptMotionEasing),
                     label = "agent_mode_cursor_offset",
                 )
-                if (displayState.isActive) {
+                if (displayState.isActive && useLiveSurface) {
                     AgentModeLivePreviewSurface(
                         displayState = displayState,
                         onAttachSurface = onAttachSurface,
@@ -2976,7 +3088,7 @@ private fun AgentModePreviewPanel(
                 } else if (bitmap != null) {
                     Image(
                     bitmap = bitmap.asImageBitmap(),
-                    contentDescription = stringResource(R.string.chat_agent_mode_virtual_display),
+                    contentDescription = resolvedContentDescription,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(10.dp)
@@ -3026,7 +3138,7 @@ private fun AgentModePreviewPanel(
             }
         } else {
             Text(
-                text = stringResource(R.string.chat_agent_mode_preview_pending),
+                text = resolvedPendingText,
                 style = MaterialTheme.typography.bodySmall,
                 color = AetherOnSurfaceVariant,
             )
@@ -3212,6 +3324,8 @@ private fun resolveAgentModeBubbleOffset(
 @Composable
 private fun AgentModePreviewHeader(
     displayState: AgentModeDisplayState,
+    label: String,
+    isChrome: Boolean,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -3219,13 +3333,13 @@ private fun AgentModePreviewHeader(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(
-            imageVector = LucideIcons.MousePointer2,
+            imageVector = if (isChrome) Icons.Rounded.Public else LucideIcons.MousePointer2,
             contentDescription = null,
             tint = Color(0xFF6D5CFF),
             modifier = Modifier.size(16.dp),
         )
         Text(
-            text = stringResource(R.string.agent_mode_label),
+            text = label,
             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
             color = AetherOnSurface,
         )
@@ -3277,10 +3391,10 @@ private fun AgentModePreviewToolStatus(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Icon(
-            imageVector = if (toolInvocation.toolName == "agent_display") {
-                LucideIcons.MousePointer2
-            } else {
-                Icons.Rounded.AutoAwesome
+            imageVector = when (toolInvocation.toolName.lowercase()) {
+                "agent_display" -> LucideIcons.MousePointer2
+                "chrome" -> Icons.Rounded.Public
+                else -> Icons.Rounded.AutoAwesome
             },
             contentDescription = null,
             tint = Color(0xFF5D7CFF),
@@ -3356,6 +3470,7 @@ private fun formatPendingToolTitle(
     "aether_scheduled_task_manage",
     "aether_developer_manage" -> formatAetherToolTitle(toolName, isRunning, arguments)
     "agent_display" -> formatAgentDisplayToolTitle(isRunning, arguments)
+    "chrome" -> formatChromeToolTitle(isRunning, arguments)
     else -> if (isRunning) {
         stringResource(R.string.tool_title_using_tool, toolName)
     } else {
@@ -3468,6 +3583,111 @@ private fun formatAgentDisplayToolTitle(
     "screenshot" -> toolStatusLabel(isRunning, R.string.tool_title_capturing_agent_mode_display, R.string.tool_title_captured_agent_mode_display)
     "stop" -> toolStatusLabel(isRunning, R.string.tool_title_stopping_agent_mode_display, R.string.tool_title_stopped_agent_mode_display)
     else -> toolStatusLabel(isRunning, R.string.tool_title_using_agent_mode_display, R.string.tool_title_used_agent_mode_display)
+}
+
+@Composable
+private fun formatChromeToolTitle(
+    isRunning: Boolean,
+    arguments: JSONObject?,
+): String = when (arguments?.optString("action")?.trim()?.lowercase()) {
+    "start" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_starting_chrome,
+        R.string.tool_title_started_chrome,
+    )
+    "status" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_checking_chrome,
+        R.string.tool_title_checked_chrome,
+    )
+    "navigate", "open" -> {
+        val url = arguments?.optString("url").orEmpty().trim()
+        if (url.isBlank()) {
+            toolStatusLabel(
+                isRunning,
+                R.string.tool_title_navigating_chrome,
+                R.string.tool_title_navigated_chrome,
+            )
+        } else {
+            stringResource(
+                if (isRunning) {
+                    R.string.tool_title_navigating_chrome_url
+                } else {
+                    R.string.tool_title_navigated_chrome_url
+                },
+                url.take(72) + if (url.length > 72) "..." else "",
+            )
+        }
+    }
+    "tap" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_tapping_chrome,
+        R.string.tool_title_tapped_chrome,
+    )
+    "swipe", "scroll" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_scrolling_chrome,
+        R.string.tool_title_scrolled_chrome,
+    )
+    "text", "type" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_typing_chrome,
+        R.string.tool_title_typed_chrome,
+    )
+    "key" -> {
+        val key = arguments?.optString("key").orEmpty().trim()
+        if (key.isBlank()) {
+            toolStatusLabel(
+                isRunning,
+                R.string.tool_title_pressing_chrome,
+                R.string.tool_title_pressed_chrome,
+            )
+        } else {
+            stringResource(
+                if (isRunning) {
+                    R.string.tool_title_pressing_chrome_key
+                } else {
+                    R.string.tool_title_pressed_chrome_key
+                },
+                key.take(32),
+            )
+        }
+    }
+    "back" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_going_back_chrome,
+        R.string.tool_title_went_back_chrome,
+    )
+    "forward" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_going_forward_chrome,
+        R.string.tool_title_went_forward_chrome,
+    )
+    "reload" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_reloading_chrome,
+        R.string.tool_title_reloaded_chrome,
+    )
+    "evaluate" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_evaluating_chrome,
+        R.string.tool_title_evaluated_chrome,
+    )
+    "screenshot" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_capturing_chrome,
+        R.string.tool_title_captured_chrome,
+    )
+    "stop" -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_stopping_chrome,
+        R.string.tool_title_stopped_chrome,
+    )
+    else -> toolStatusLabel(
+        isRunning,
+        R.string.tool_title_using_chrome,
+        R.string.tool_title_used_chrome,
+    )
 }
 
 private fun formatAetherCategories(arguments: JSONObject?): String {

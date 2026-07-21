@@ -37,6 +37,7 @@ class SettingsRepository(
             ),
             baseUrl = storedBaseUrl,
             modelId = preferences[MODEL_ID] ?: defaults.modelId,
+            userAgent = normalizeLlmUserAgent(preferences[USER_AGENT]),
             reasoningEffort = normalizeReasoningEffort(preferences[REASONING_EFFORT]),
             systemPrompt = preferences[SYSTEM_PROMPT] ?: defaults.systemPrompt,
             tavilyApiKey = preferences[TAVILY_API_KEY].orEmpty(),
@@ -197,6 +198,7 @@ class SettingsRepository(
                     )
                 prefs[BASE_URL] = config.baseUrl
                 prefs[MODEL_ID] = legacyModelId.ifBlank { config.modelId }
+                prefs[USER_AGENT] = normalizeLlmUserAgent(config.userAgent)
             }
             prefs.remove(PROVIDER)
             prefs.remove(BASIC_FUNCTION_CALLING_COMPATIBILITY_MODE)
@@ -302,6 +304,7 @@ class SettingsRepository(
                 )
                 prefs[BASE_URL] = fallbackOption.baseUrl
                 prefs[MODEL_ID] = fallbackOption.modelId
+                prefs[USER_AGENT] = normalizeLlmUserAgent(fallbackOption.userAgent)
             }
         }
     }
@@ -321,6 +324,7 @@ class SettingsRepository(
             )
             it[BASE_URL] = settings.baseUrl
             it[MODEL_ID] = settings.modelId
+            it[USER_AGENT] = normalizeLlmUserAgent(settings.userAgent)
             it[REASONING_EFFORT] = normalizeReasoningEffort(settings.reasoningEffort)
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
@@ -413,6 +417,7 @@ class SettingsRepository(
             )
             it[BASE_URL] = settings.baseUrl
             it[MODEL_ID] = settings.modelId
+            it[USER_AGENT] = normalizeLlmUserAgent(settings.userAgent)
             it[REASONING_EFFORT] = normalizeReasoningEffort(settings.reasoningEffort)
             it[SYSTEM_PROMPT] = settings.systemPrompt
             it[TAVILY_API_KEY] = settings.tavilyApiKey
@@ -503,6 +508,7 @@ class SettingsRepository(
         val PROVIDER_ENVIRONMENT_VARIABLES = stringPreferencesKey("provider_environment_variables")
         val BASE_URL = stringPreferencesKey("base_url")
         val MODEL_ID = stringPreferencesKey("model_id")
+        val USER_AGENT = stringPreferencesKey("user_agent")
         val REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
         val TAVILY_API_KEY = stringPreferencesKey("tavily_api_key")

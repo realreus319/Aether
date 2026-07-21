@@ -72,6 +72,7 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Button
@@ -127,7 +128,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -192,9 +192,12 @@ import com.zhousl.aether.data.normalizeOldCommandHistoryRetentionHours
 import com.zhousl.aether.data.normalizeTavilyBaseUrl
 import com.zhousl.aether.data.quickActionLabel
 import com.zhousl.aether.data.resolveAutomaticModelKey
+import com.zhousl.aether.data.sortedForAutomaticModelPurpose
 import com.zhousl.aether.mod.AetherNativeModState
 import com.zhousl.aether.runtime.LocalRuntimeIssue
 import com.zhousl.aether.runtime.LocalRuntimeSetupState
+import com.zhousl.aether.runtime.AlpineSetupActivity
+import com.zhousl.aether.runtime.AlpineSetupProgress
 import com.zhousl.aether.runtime.AlpineTerminalLaunchSpec
 import com.zhousl.aether.termux.TermuxSetupState
 import com.zhousl.aether.ui.theme.AetherBackground
@@ -241,6 +244,7 @@ private enum class SettingsPage {
     Termux,
     Alpine,
     AlpineTerminal,
+    AlpineChrome,
     RuntimeDefaults,
     AgentMode,
     Statistics,
@@ -281,6 +285,7 @@ private fun SettingsPage.depth(): Int = when (this) {
     SettingsPage.EditScheduledTask,
     SettingsPage.AlpineTerminal,
     SettingsPage.ChannelDetail,
+    SettingsPage.AlpineChrome,
     SettingsPage.RootSetupProgress -> 2
     SettingsPage.DefaultChatModel,
     SettingsPage.DefaultTitleModel,
@@ -449,6 +454,7 @@ fun SettingsScreen(
     enabledRuntimeIds: Set<LocalRuntimeId>,
     defaultRuntimeId: LocalRuntimeId?,
     alpinePackageProfiles: Map<String, PackageProfileState>,
+    alpinePackageInstallProgress: Map<String, AlpineSetupProgress>,
     developerTermuxReadyOverride: Boolean?,
     installedSkills: List<com.zhousl.aether.data.InstalledSkill>,
     installedPiExtensions: List<InstalledPiExtension>,
@@ -537,6 +543,8 @@ fun SettingsScreen(
     onRefreshAlpineSetup: () -> Unit,
     onInstallAlpinePackageProfile: (String) -> Unit,
     onCreateAlpineTerminalLaunchSpec: suspend () -> Result<AlpineTerminalLaunchSpec>,
+    onStartAlpineChrome: suspend () -> Result<Unit>,
+    onShouldShowAlpineChromeKeyboard: suspend (Int, Int) -> Result<Boolean>,
     onSetDefaultRuntime: (LocalRuntimeId) -> Unit,
     onRefreshRootSetup: () -> Unit,
     onStartRootSetupFromSettings: (RootSetupProgressReturnPage) -> Unit,
@@ -777,7 +785,8 @@ fun SettingsScreen(
         SettingsPage.AddMcpServer, SettingsPage.EditMcpServer -> SettingsPage.McpServers
         SettingsPage.AddScheduledTask, SettingsPage.EditScheduledTask -> SettingsPage.ScheduledTasks
         SettingsPage.ChannelDetail -> SettingsPage.Channels
-        SettingsPage.AlpineTerminal -> SettingsPage.Alpine
+        SettingsPage.AlpineTerminal,
+        SettingsPage.AlpineChrome -> SettingsPage.Alpine
         SettingsPage.RootSetupProgress -> rootSetupReturnPageValue()
         else -> SettingsPage.Hub
     }
@@ -944,6 +953,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_chat_model_subtitle),
                 selectedKey = defaultChatModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Chat,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat)
                 )?.fullLabel?.let { stringResource(R.string.settings_automatic_model_with_name, it) }
@@ -958,6 +968,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_title_model_subtitle),
                 selectedKey = defaultTitleModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Title,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Title)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -973,6 +984,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_naming_model_subtitle),
                 selectedKey = defaultNamingModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Naming,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Naming)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -988,6 +1000,7 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_default_compacting_model_subtitle),
                 selectedKey = defaultCompactingModelKeyValue,
                 options = enabledModelOptions,
+                purpose = AutomaticModelPurpose.Compacting,
                 automaticLabel = enabledModelOptions.findModelOption(
                     enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Compacting)
                         .ifBlank { enabledModelOptions.resolveAutomaticModelKey(AutomaticModelPurpose.Chat) }
@@ -1246,6 +1259,7 @@ fun SettingsScreen(
                 title = "Alpine",
                 setupState = alpineSetupState,
                 packageProfiles = alpinePackageProfiles,
+                installProgress = alpinePackageInstallProgress,
                 isDefaultRuntime = defaultRuntimeId == LocalRuntimeId.Alpine,
                 onInitialize = onInitializeAlpineRuntime,
                 onReset = onResetAlpineRuntime,
@@ -1253,11 +1267,18 @@ fun SettingsScreen(
                 onInstallPackageProfile = onInstallAlpinePackageProfile,
                 onSetDefault = { onSetDefaultRuntime(LocalRuntimeId.Alpine) },
                 onOpenTerminal = { currentPage = SettingsPage.AlpineTerminal.name },
+                onOpenChrome = { currentPage = SettingsPage.AlpineChrome.name },
                 onBack = { currentPage = SettingsPage.Hub.name },
             )
 
             SettingsPage.AlpineTerminal -> AlpineTerminalScreen(
                 createLaunchSpec = onCreateAlpineTerminalLaunchSpec,
+                onBack = { currentPage = SettingsPage.Alpine.name },
+            )
+
+            SettingsPage.AlpineChrome -> AlpineChromeScreen(
+                onStart = onStartAlpineChrome,
+                onShouldShowKeyboard = onShouldShowAlpineChromeKeyboard,
                 onBack = { currentPage = SettingsPage.Alpine.name },
             )
 
@@ -2362,11 +2383,27 @@ private fun TermuxEnvironmentVariablesSection(
                 )
             }
             rows.forEachIndexed { index, variable ->
-                var nameValue by rememberSaveable(index, variable.name, stateSaver = TextFieldValue.Saver) {
+                var nameValue by rememberSaveable(index, stateSaver = TextFieldValue.Saver) {
                     mutableStateOf(TextFieldValue(variable.name))
                 }
-                var valueValue by rememberSaveable(index, variable.value, stateSaver = TextFieldValue.Saver) {
+                var valueValue by rememberSaveable(index, stateSaver = TextFieldValue.Saver) {
                     mutableStateOf(TextFieldValue(variable.value))
+                }
+                LaunchedEffect(variable.name) {
+                    if (variable.name != nameValue.text) {
+                        nameValue = TextFieldValue(
+                            text = variable.name,
+                            selection = androidx.compose.ui.text.TextRange(variable.name.length),
+                        )
+                    }
+                }
+                LaunchedEffect(variable.value) {
+                    if (variable.value != valueValue.text) {
+                        valueValue = TextFieldValue(
+                            text = variable.value,
+                            selection = androidx.compose.ui.text.TextRange(variable.value.length),
+                        )
+                    }
                 }
                 fun commitRow(name: String = nameValue.text, value: String = valueValue.text) {
                     val updated = rows.toMutableList()
@@ -2645,22 +2682,26 @@ private fun ModelSelectionListPage(
     subtitle: String,
     selectedKey: String,
     options: List<ProviderModelOption>,
+    purpose: AutomaticModelPurpose,
     automaticLabel: String,
     automaticSubtitle: String,
     onSelected: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val selectedOption = options.findModelOption(selectedKey)
+    val sortedOptions = remember(options, purpose) {
+        options.sortedForAutomaticModelPurpose(purpose)
+    }
     var searchQuery by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
     }
     val trimmedSearchQuery = searchQuery.text.trim()
-    val filteredOptions = remember(options, trimmedSearchQuery) {
+    val filteredOptions = remember(sortedOptions, trimmedSearchQuery) {
         if (trimmedSearchQuery.isBlank()) {
-            options
+            sortedOptions
         } else {
             val needle = trimmedSearchQuery.lowercase()
-            options.filter { option ->
+            sortedOptions.filter { option ->
                 option.fullLabel.contains(needle, ignoreCase = true) ||
                     option.modelId.contains(needle, ignoreCase = true) ||
                     option.providerName.contains(needle, ignoreCase = true) ||
@@ -3254,7 +3295,7 @@ private fun ChannelDetailPage(
                 ChatGptTextField(
                     label = stringResource(R.string.settings_channel_bot_token),
                     value = token,
-                    visualTransformation = PasswordVisualTransformation(),
+                    isSecret = true,
                     onValueChange = { token = it },
                 )
             } else {
@@ -3275,7 +3316,7 @@ private fun ChannelDetailPage(
                         stringResource(R.string.settings_channel_app_secret)
                     },
                     value = appSecret,
-                    visualTransformation = PasswordVisualTransformation(),
+                    isSecret = true,
                     onValueChange = { appSecret = it },
                 )
             }
@@ -3849,6 +3890,8 @@ private fun WebToolsPage(
                 label = stringResource(R.string.settings_tavily_api_key),
                 value = tavilyApiKeyValue,
                 onValueChange = onTavilyApiKeyChanged,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                isSecret = true,
             )
             CardDivider()
             ChatGptTextField(
@@ -5993,6 +6036,7 @@ private fun AlpineSettingsPage(
     title: String,
     setupState: LocalRuntimeSetupState,
     packageProfiles: Map<String, PackageProfileState>,
+    installProgress: Map<String, AlpineSetupProgress>,
     isDefaultRuntime: Boolean,
     onInitialize: () -> Unit,
     onReset: () -> Unit,
@@ -6000,6 +6044,7 @@ private fun AlpineSettingsPage(
     onInstallPackageProfile: (String) -> Unit,
     onSetDefault: () -> Unit,
     onOpenTerminal: () -> Unit,
+    onOpenChrome: () -> Unit,
     onBack: () -> Unit,
 ) {
     LaunchedEffect(Unit) {
@@ -6012,6 +6057,10 @@ private fun AlpineSettingsPage(
         trailingEnabled = setupState.isReady,
         trailingContentDescription = stringResource(R.string.settings_open_terminal),
         onTrailingAction = onOpenTerminal,
+        secondaryTrailingIcon = Icons.Rounded.Public,
+        secondaryTrailingEnabled = packageProfiles["chrome"]?.installed == true,
+        secondaryTrailingContentDescription = stringResource(R.string.settings_open_chrome),
+        onSecondaryTrailingAction = onOpenChrome,
     ) {
         Text(
             text = stringResource(R.string.settings_alpine_description),
@@ -6097,6 +6146,7 @@ private fun AlpineSettingsPage(
                     title = stringResource(R.string.settings_python_environment),
                     subtitle = "python3, pip, virtualenv",
                     profileState = packageProfiles["python"],
+                    installProgress = installProgress["python"],
                     enabled = setupState.isReady,
                     onInstall = { onInstallPackageProfile("python") },
                 )
@@ -6105,6 +6155,7 @@ private fun AlpineSettingsPage(
                     title = stringResource(R.string.settings_node_environment),
                     subtitle = "nodejs, npm",
                     profileState = packageProfiles["node"],
+                    installProgress = installProgress["node"],
                     enabled = setupState.isReady,
                     onInstall = { onInstallPackageProfile("node") },
                 )
@@ -6113,6 +6164,7 @@ private fun AlpineSettingsPage(
                     title = stringResource(R.string.settings_git_ripgrep_tools),
                     subtitle = "git, ripgrep",
                     profileState = packageProfiles["git_search"],
+                    installProgress = installProgress["git_search"],
                     enabled = setupState.isReady,
                     onInstall = { onInstallPackageProfile("git_search") },
                 )
@@ -6121,8 +6173,18 @@ private fun AlpineSettingsPage(
                     title = stringResource(R.string.settings_ssh_tools),
                     subtitle = "openssh-client",
                     profileState = packageProfiles["ssh"],
+                    installProgress = installProgress["ssh"],
                     enabled = setupState.isReady,
                     onInstall = { onInstallPackageProfile("ssh") },
+                )
+                CardDivider()
+                AlpineProfileRow(
+                    title = stringResource(R.string.settings_chrome_environment),
+                    subtitle = "chromium, noVNC, Noto fonts",
+                    profileState = packageProfiles["chrome"],
+                    installProgress = installProgress["chrome"],
+                    enabled = setupState.isReady,
+                    onInstall = { onInstallPackageProfile("chrome") },
                 )
             }
         }
@@ -6134,10 +6196,16 @@ private fun AlpineProfileRow(
     title: String,
     subtitle: String,
     profileState: PackageProfileState?,
+    installProgress: AlpineSetupProgress?,
     enabled: Boolean,
     onInstall: () -> Unit,
 ) {
-    val isInstalling = profileState?.lastError == "Installing..."
+    val isInstalling = installProgress != null
+    val progressText = installProgress?.let { alpinePackageProgressText(it) }
+    val progressButtonText = installProgress?.let { alpinePackageProgressValue(it) }
+    val persistedError = profileState?.lastError
+        ?.takeUnless { it == "Installing..." }
+        .orEmpty()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -6149,10 +6217,19 @@ private fun AlpineProfileRow(
             Text(title, style = MaterialTheme.typography.bodyMedium, color = AetherOnSurface)
             Spacer(Modifier.height(2.dp))
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AetherOnSurfaceVariant)
-            if (!profileState?.lastError.isNullOrBlank() && !isInstalling) {
+            if (progressText != null) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = profileState.lastError,
+                    text = progressText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AetherPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else if (persistedError.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = persistedError,
                     style = MaterialTheme.typography.bodySmall,
                     color = AetherOnSurfaceVariant,
                     maxLines = 2,
@@ -6162,7 +6239,7 @@ private fun AlpineProfileRow(
         }
         SettingsSubtleActionButton(
             label = when {
-                isInstalling -> stringResource(R.string.settings_installing)
+                isInstalling -> progressButtonText.orEmpty()
                 profileState?.installed == true -> stringResource(R.string.settings_installed)
                 else -> stringResource(R.string.common_install)
             },
@@ -7358,6 +7435,10 @@ private fun SubPageScaffold(
     trailingEnabled: Boolean = true,
     trailingContentDescription: String = title,
     onTrailingAction: (() -> Unit)? = null,
+    secondaryTrailingIcon: ImageVector? = null,
+    secondaryTrailingEnabled: Boolean = true,
+    secondaryTrailingContentDescription: String = title,
+    onSecondaryTrailingAction: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     var topBarBodyHeightPx by remember { mutableIntStateOf(0) }
@@ -7400,6 +7481,10 @@ private fun SubPageScaffold(
                 trailingEnabled = trailingEnabled,
                 trailingContentDescription = trailingContentDescription,
                 onTrailingAction = onTrailingAction,
+                secondaryTrailingIcon = secondaryTrailingIcon,
+                secondaryTrailingEnabled = secondaryTrailingEnabled,
+                secondaryTrailingContentDescription = secondaryTrailingContentDescription,
+                onSecondaryTrailingAction = onSecondaryTrailingAction,
                 onBodyHeightChanged = { topBarBodyHeightPx = it },
             )
         }
@@ -7417,6 +7502,10 @@ private fun SettingsTopBarOverlay(
     trailingEnabled: Boolean = true,
     trailingContentDescription: String = title,
     onTrailingAction: (() -> Unit)? = null,
+    secondaryTrailingIcon: ImageVector? = null,
+    secondaryTrailingEnabled: Boolean = true,
+    secondaryTrailingContentDescription: String = title,
+    onSecondaryTrailingAction: (() -> Unit)? = null,
     onBodyHeightChanged: (Int) -> Unit,
 ) {
     Column(
@@ -7435,6 +7524,10 @@ private fun SettingsTopBarOverlay(
                 trailingEnabled = trailingEnabled,
                 trailingContentDescription = trailingContentDescription,
                 onTrailingAction = onTrailingAction,
+                secondaryTrailingIcon = secondaryTrailingIcon,
+                secondaryTrailingEnabled = secondaryTrailingEnabled,
+                secondaryTrailingContentDescription = secondaryTrailingContentDescription,
+                onSecondaryTrailingAction = onSecondaryTrailingAction,
             )
         }
         Spacer(
@@ -7454,35 +7547,86 @@ private fun SettingsTopBar(
     trailingEnabled: Boolean = true,
     trailingContentDescription: String = title,
     onTrailingAction: (() -> Unit)? = null,
+    secondaryTrailingIcon: ImageVector? = null,
+    secondaryTrailingEnabled: Boolean = true,
+    secondaryTrailingContentDescription: String = title,
+    onSecondaryTrailingAction: (() -> Unit)? = null,
 ) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         SettingsCircleButton(
             icon = Icons.AutoMirrored.Rounded.ArrowBack,
             contentDescription = stringResource(R.string.common_back),
             onClick = onBack,
+            modifier = Modifier.align(Alignment.CenterStart),
         )
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
             color = AetherOnSurface,
+            modifier = Modifier.align(Alignment.Center),
         )
-        if (trailingIcon != null && onTrailingAction != null) {
-            SettingsCircleButton(
-                icon = trailingIcon,
-                contentDescription = trailingContentDescription,
-                enabled = trailingEnabled,
-                onClick = onTrailingAction,
-            )
-        } else {
-            Spacer(Modifier.size(44.dp))
+        Row(
+            modifier = Modifier.align(Alignment.CenterEnd),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (secondaryTrailingIcon != null && onSecondaryTrailingAction != null) {
+                SettingsCircleButton(
+                    icon = secondaryTrailingIcon,
+                    contentDescription = secondaryTrailingContentDescription,
+                    enabled = secondaryTrailingEnabled,
+                    onClick = onSecondaryTrailingAction,
+                )
+            }
+            if (trailingIcon != null && onTrailingAction != null) {
+                SettingsCircleButton(
+                    icon = trailingIcon,
+                    contentDescription = trailingContentDescription,
+                    enabled = trailingEnabled,
+                    onClick = onTrailingAction,
+                )
+            } else if (secondaryTrailingIcon == null) {
+                Spacer(Modifier.size(44.dp))
+            }
         }
+    }
+}
+
+@Composable
+private fun alpinePackageProgressText(progress: AlpineSetupProgress): String {
+    val value = alpinePackageProgressValue(progress)
+    return when (progress.activity) {
+        AlpineSetupActivity.Extracting ->
+            stringResource(R.string.settings_profile_extracting_rate, value)
+        AlpineSetupActivity.Downloading ->
+            stringResource(R.string.settings_profile_downloading_rate, value)
+        AlpineSetupActivity.Installing ->
+            stringResource(R.string.settings_profile_installing_percent, value)
+        AlpineSetupActivity.None ->
+            stringResource(R.string.settings_profile_processing_rate, value)
+    }
+}
+
+private fun alpinePackageProgressValue(progress: AlpineSetupProgress): String =
+    if (progress.activity == AlpineSetupActivity.Installing) {
+        "${progress.progressPercent ?: 0}%"
+    } else {
+        formatTransferRate(progress.bytesPerSecond)
+    }
+
+private fun formatTransferRate(bytesPerSecond: Long): String {
+    val rate = bytesPerSecond.coerceAtLeast(0L).toDouble()
+    return when {
+        rate >= 1024.0 * 1024.0 ->
+            String.format(Locale.US, "%.1f MB/s", rate / (1024.0 * 1024.0))
+        rate >= 1024.0 ->
+            String.format(Locale.US, "%.0f KB/s", rate / 1024.0)
+        else -> String.format(Locale.US, "%.0f B/s", rate)
     }
 }
 
@@ -7490,11 +7634,12 @@ private fun SettingsTopBar(
 private fun SettingsCircleButton(
     icon: ImageVector,
     contentDescription: String,
+    modifier: Modifier = Modifier,
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(44.dp)
             .shadow(10.dp, RoundedCornerShape(50), ambientColor = AetherScrim, spotColor = AetherScrim)
             .clip(RoundedCornerShape(50))

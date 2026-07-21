@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.posthog.android.PostHogAndroid
 import com.posthog.android.PostHogAndroidConfig
 import com.zhousl.aether.data.AgentExtensionsRepository
+import com.zhousl.aether.data.AlpineChromeController
 import com.zhousl.aether.data.AgentModeController
 import com.zhousl.aether.data.AgentSkillManager
 import com.zhousl.aether.data.AetherAppExtensionManager
@@ -161,6 +162,11 @@ class AetherAppRuntime(
         runtimeWorkspaceFileBridge = runtimeWorkspaceFileBridge,
         diagnosticLogger = diagnosticLogger,
     )
+    val alpineChromeController = AlpineChromeController(
+        context = application,
+        alpineRuntime = alpineRuntime,
+        diagnosticLogger = diagnosticLogger,
+    )
     val skillManager = AgentSkillManager(
         context = application,
         extensionsRepository = extensionsRepository,
@@ -191,6 +197,7 @@ class AetherAppRuntime(
             runtimeWorkspaceFileBridge = runtimeWorkspaceFileBridge,
             piCompletionClient = piCompletionClient,
             agentModeController = agentModeController,
+            alpineChromeController = alpineChromeController,
         ),
     )
     val appForegroundTracker = AppForegroundTracker()
