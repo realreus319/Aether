@@ -88,6 +88,10 @@ class BridgeClient {
     });
   }
 
+  send(id, type, payload = {}) {
+    this.child.stdin.write(`${JSON.stringify({ id, type, payload })}\n`);
+  }
+
   waitForEvent(predicate, timeoutMs = 5_000) {
     const existing = this.events.find(predicate);
     if (existing) return Promise.resolve(existing);
@@ -133,6 +137,56 @@ test("lists Pi extension packages from an isolated agent directory", async () =>
       }),
       /npm: source/,
     );
+  } finally {
+    await client.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("reports Native Mod entrypoints for installed npm packages", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aether-native-package-"));
+  const agentDirectory = join(home, ".pi", "agent");
+  const packageDirectory = join(
+    agentDirectory,
+    "npm",
+    "node_modules",
+    "aether-native-test",
+  );
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(
+    join(agentDirectory, "settings.json"),
+    JSON.stringify({ packages: ["npm:aether-native-test"] }),
+    "utf8",
+  );
+  await writeFile(
+    join(packageDirectory, "package.json"),
+    JSON.stringify({
+      name: "aether-native-test",
+      version: "1.0.0",
+      aether: {
+        native: {
+          classpath: ["./mod.dex"],
+          entrypoints: [],
+          entrypoint: "example.FallbackMod",
+        },
+      },
+    }),
+    "utf8",
+  );
+
+  const client = new BridgeClient({
+    HOME: home,
+    USERPROFILE: home,
+    PI_OFFLINE: "1",
+  });
+  try {
+    const result = await client.request(
+      "native-packages-list",
+      "list_extension_packages",
+    );
+    assert.equal(result.packages.length, 1);
+    assert.equal(result.packages[0].source, "npm:aether-native-test");
+    assert.equal(result.packages[0].native_entrypoint_count, 1);
   } finally {
     await client.close();
     await rm(home, { recursive: true, force: true });
@@ -274,6 +328,271 @@ export default defineAetherExtension((aether) => {
     assert.equal(eventResult.handled, true);
     assert.equal(eventResult.cancelled, false);
     assert.equal(eventResult.payload.text, "[ext] ship it");
+  } finally {
+    await client.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("keeps the last working Aether runtime when a reload factory fails", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aether-atomic-reload-"));
+  const extensionDirectory = join(home, ".aether", "extensions", "atomic");
+  const extensionPath = join(extensionDirectory, "index.ts");
+  await mkdir(extensionDirectory, { recursive: true });
+  await writeFile(
+    join(extensionDirectory, "package.json"),
+    JSON.stringify({
+      name: "aether-atomic",
+      version: "1.0.0",
+      aether: { extensions: ["./index.ts"] },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    extensionPath,
+    `
+import { defineAetherExtension, ui } from "@baimoqilin/aether-extension-api";
+
+export default defineAetherExtension((aether) => {
+  aether.registerSurface("chat.composer.top", {
+    id: "stable",
+    render: () => ui.text("stable runtime"),
+  });
+  aether.registerAction("version", () => ({ version: "stable" }));
+});
+`,
+    "utf8",
+  );
+
+  const client = new BridgeClient({ HOME: home, USERPROFILE: home });
+  try {
+    const loaded = await client.request(
+      "atomic-load",
+      "reload_aether_extensions",
+    );
+    const extensionId = loaded.snapshot.extensions[0].id;
+    assert.equal(loaded.reloaded, true);
+    assert.equal(loaded.snapshot.surfaces[0].tree.text, "stable runtime");
+
+    await writeFile(
+      extensionPath,
+      `
+import { defineAetherExtension, ui } from "@aether/extension-api";
+
+export default defineAetherExtension((aether) => {
+  aether.registerSurface("chat.composer.top", {
+    id: "partial",
+    render: () => ui.text("partial runtime"),
+  });
+  throw new Error("candidate failed after registration");
+});
+`,
+      "utf8",
+    );
+
+    const rejected = await client.request(
+      "atomic-reload-failed",
+      "reload_aether_extensions",
+    );
+    assert.equal(rejected.reloaded, false);
+    assert.match(rejected.errors[0].error, /candidate failed after registration/);
+    assert.equal(rejected.snapshot.extensions[0].id, extensionId);
+    assert.deepEqual(
+      rejected.snapshot.surfaces.map((surface) => surface.id),
+      [`${extensionId}:stable`],
+    );
+    assert.equal(rejected.snapshot.surfaces[0].tree.text, "stable runtime");
+
+    const action = await client.request(
+      "atomic-old-action",
+      "invoke_aether_extension_action",
+      {
+        extension_id: extensionId,
+        action: "version",
+        args: {},
+      },
+    );
+    assert.deepEqual(action.result, { version: "stable" });
+  } finally {
+    await client.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("enforces Aether Script API compatibility ranges", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aether-api-range-"));
+  const extensionDirectory = join(home, ".aether", "extensions", "api-range");
+  const manifestPath = join(extensionDirectory, "package.json");
+  await mkdir(extensionDirectory, { recursive: true });
+  await writeFile(
+    join(extensionDirectory, "index.ts"),
+    `
+import { defineAetherExtension } from "@aether/extension-api";
+export default defineAetherExtension(() => {});
+`,
+    "utf8",
+  );
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      name: "aether-api-range",
+      version: "1.0.0",
+      aether: {
+        api: { min: 3 },
+        extensions: ["./index.ts"],
+      },
+    }),
+    "utf8",
+  );
+
+  const client = new BridgeClient({ HOME: home, USERPROFILE: home });
+  try {
+    const incompatible = await client.request(
+      "api-range-incompatible",
+      "reload_aether_extensions",
+    );
+    assert.equal(incompatible.reloaded, false);
+    assert.match(incompatible.errors[0].error, /API 3 or newer/);
+
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        name: "aether-api-range",
+        version: "1.0.0",
+        aether: {
+          api: { max: 1, allowNewer: true },
+          extensions: ["./index.ts"],
+        },
+      }),
+      "utf8",
+    );
+    const allowed = await client.request(
+      "api-range-allow-newer",
+      "reload_aether_extensions",
+    );
+    assert.equal(allowed.reloaded, true);
+    assert.equal(allowed.snapshot.extensions.length, 1);
+  } finally {
+    await client.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("reload_all_extensions honors Aether extension load filters", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aether-reload-all-filters-"));
+  const extensionDirectory = join(home, ".aether", "extensions", "filtered");
+  await mkdir(extensionDirectory, { recursive: true });
+  await writeFile(
+    join(extensionDirectory, "package.json"),
+    JSON.stringify({
+      name: "aether-filtered",
+      version: "1.0.0",
+      aether: { extensions: ["./index.ts"] },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    join(extensionDirectory, "index.ts"),
+    `
+import { defineAetherExtension } from "@aether/extension-api";
+export default defineAetherExtension(() => {});
+`,
+    "utf8",
+  );
+
+  const client = new BridgeClient({ HOME: home, USERPROFILE: home });
+  try {
+    const disabled = await client.request(
+      "reload-all-disabled",
+      "reload_all_extensions",
+      { disabled_extension_paths: [extensionDirectory] },
+    );
+    assert.equal(disabled.succeeded, true);
+    assert.deepEqual(disabled.aether.extensions, []);
+
+    const enabled = await client.request(
+      "reload-all-enabled",
+      "reload_all_extensions",
+      {
+        disabled_extension_paths: [],
+        disabled_package_sources: [],
+      },
+    );
+    assert.equal(enabled.succeeded, true);
+    assert.equal(enabled.aether.extensions.length, 1);
+  } finally {
+    await client.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("routes delayed Aether host calls through the persistent subscriber", async () => {
+  const home = await mkdtemp(join(tmpdir(), "aether-background-host-"));
+  const extensionDirectory = join(home, ".aether", "extensions", "background");
+  await mkdir(extensionDirectory, { recursive: true });
+  await writeFile(
+    join(extensionDirectory, "package.json"),
+    JSON.stringify({
+      name: "aether-background",
+      version: "1.0.0",
+      aether: { extensions: ["./index.ts"] },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    join(extensionDirectory, "index.ts"),
+    `
+import { defineAetherExtension } from "@aether/extension-api";
+
+export default defineAetherExtension((aether) => {
+  aether.registerAction("schedule", () => {
+    setTimeout(() => {
+      void aether.host.invoke("app.notify", { message: "background" });
+    }, 250);
+    return { scheduled: true };
+  });
+});
+`,
+    "utf8",
+  );
+
+  const client = new BridgeClient({ HOME: home, USERPROFILE: home });
+  try {
+    const loaded = await client.request(
+      "background-load",
+      "reload_aether_extensions",
+    );
+    client.send("background-subscriber", "subscribe_aether_extensions");
+    await client.waitForEvent(
+      (frame) =>
+        frame.id === "background-subscriber" &&
+        frame.event === "aether_invalidated" &&
+        frame.payload.subscribed === true,
+    );
+
+    const action = await client.request(
+      "background-action",
+      "invoke_aether_extension_action",
+      {
+        extension_id: loaded.snapshot.extensions[0].id,
+        action: "schedule",
+        args: {},
+      },
+    );
+    assert.deepEqual(action.result, { scheduled: true });
+
+    const hostCall = await client.waitForEvent(
+      (frame) =>
+        frame.id === "background-subscriber" &&
+        frame.event === "aether_host_call" &&
+        frame.payload.method === "app.notify",
+    );
+    assert.notEqual(hostCall.id, "background-action");
+    await client.request("background-host-result", "aether_host_result", {
+      call_id: hostCall.payload.call_id,
+      ok: true,
+      result: { notified: true },
+    });
   } finally {
     await client.close();
     await rm(home, { recursive: true, force: true });

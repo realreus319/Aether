@@ -885,6 +885,8 @@
     <string name="settings_pi_extensions">Extensions</string>
     <string name="settings_pi_extensions_count_configured">已安装 %1$d 个</string>
     <string name="settings_pi_extensions_warning">Extension package 可以同时修改 Pi Agent 与 Aether 的 Android UI 或应用逻辑。它们会作为可信代码运行，并可广泛访问 Agent、应用宿主、运行时与工作区。</string>
+    <string name="settings_script_extension_errors_title">Script Extension 错误</string>
+    <string name="settings_script_extension_error_item">%1$s · %2$s\n%3$s</string>
     <string name="settings_extension_discover">发现</string>
     <string name="settings_extension_installed">已安装</string>
     <string name="settings_search_extensions">搜索 package</string>

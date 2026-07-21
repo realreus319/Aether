@@ -1,7 +1,7 @@
 import {
   defineAetherExtension,
   ui,
-} from "@aether/extension-api";
+} from "@baimoqilin/aether-extension-api";
 
 type Skill = {
   id: string;

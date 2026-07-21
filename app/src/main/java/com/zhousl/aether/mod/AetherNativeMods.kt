@@ -13,6 +13,7 @@ import com.zhousl.aether.data.AetherModOperationInterceptor
 import com.zhousl.aether.data.AetherModServiceHandler
 import com.zhousl.aether.data.AetherModServiceMethod
 import com.zhousl.aether.data.PiExtensionStateRepository
+import com.zhousl.aether.data.pi.PiKernelBridge
 import com.zhousl.aether.runtime.AlpineRuntime
 import com.zhousl.aether.ui.AetherUiState
 import dalvik.system.DexClassLoader
@@ -33,6 +34,7 @@ private const val PreferenceSafeMode = "safe_mode"
 private const val PreferenceLastLoadingMod = "last_loading_mod"
 private const val PreferenceFailedModIds = "failed_mod_ids"
 private const val NativeModUiStableDelayMillis = 5_000L
+private const val AetherNativeApiVersion = 1
 
 enum class AetherNativeComponentMode {
     Before,
@@ -277,6 +279,7 @@ class AetherNativeModManager(
     context: Context,
     private val application: Application,
     private val alpineRuntime: AlpineRuntime,
+    private val piKernelBridge: PiKernelBridge,
     private val kernel: AetherModKernel,
     private val piExtensionStateRepository: PiExtensionStateRepository,
     private val diagnosticLogger: AetherDiagnosticLogger,
@@ -311,6 +314,9 @@ class AetherNativeModManager(
         val previousStartupWasInterrupted =
             preferences.getBoolean(PreferenceStartupInProgress, false)
         val suspectedModId = preferences.getString(PreferenceLastLoadingMod, "").orEmpty()
+        val previousFailedModIds = preferences
+            .getStringSet(PreferenceFailedModIds, emptySet())
+            .orEmpty()
         val safeModeActive = preferences.getBoolean(PreferenceSafeMode, false) ||
             previousStartupWasInterrupted
         if (previousStartupWasInterrupted) {
@@ -324,7 +330,15 @@ class AetherNativeModManager(
                 safeModeActive = true,
                 suspectedCrashModId = suspectedModId,
                 discovered = discovery.manifests.map(AetherNativeModManifest::descriptor),
-                failures = discovery.failures,
+                failures = (
+                    discovery.failures +
+                        previousFailedModIds.map { id ->
+                            AetherNativeModFailure(
+                                id = id,
+                                message = "Failed during the previous Native Mod startup.",
+                            )
+                        }
+                    ).distinctBy { "${it.id}:${it.entrypoint}:${it.message}" },
             )
             markInitializationCompleted()
             diagnosticLogger.event(
@@ -367,7 +381,6 @@ class AetherNativeModManager(
                 PreferenceFailedModIds,
                 failures.map(AetherNativeModFailure::id).toSet(),
             )
-            .putString(PreferenceLastLoadingMod, "")
             .apply()
         _state.value = AetherNativeModState(
             discovered = discovery.manifests.map(AetherNativeModManifest::descriptor),
@@ -427,6 +440,24 @@ class AetherNativeModManager(
         _state.value = _state.value.copy(
             restartRequired = true,
         )
+    }
+
+    fun shutdown() {
+        loadedEntrypoints.asReversed().forEach { loaded ->
+            runCatching { loaded.instance.onUnload() }
+                .onFailure { throwable ->
+                    diagnosticLogger.exception(
+                        category = "native_mod",
+                        event = "unload_failed",
+                        throwable = throwable,
+                        details = mapOf(
+                            "mod_id" to loaded.context.modId,
+                        ),
+                    )
+                }
+            loaded.context.rollback()
+        }
+        loadedEntrypoints.clear()
     }
 
     private fun loadManifest(
@@ -541,16 +572,43 @@ class AetherNativeModManager(
     }
 
     private suspend fun discoverNativeMods(): NativeModDiscovery {
-        val disabledPaths = piExtensionStateRepository.loadOptions().disabledExtensionPaths
+        val loadOptions = piExtensionStateRepository.loadOptions()
+        val disabledPaths = loadOptions.disabledExtensionPaths
         val root = alpineRuntime.resolveManagedGuestPath(
             AetherNativeExtensionGuestDirectory
         )
-        if (!root.isDirectory) return NativeModDiscovery()
         val manifests = mutableListOf<AetherNativeModManifest>()
         val failures = mutableListOf<AetherNativeModFailure>()
-        root.listFiles()
+        val importedPackageRoots = root
+            .takeIf(File::isDirectory)
+            ?.listFiles()
             .orEmpty()
             .filter(File::isDirectory)
+        val installedPackageRoots = runCatching {
+            val packages = piKernelBridge.listExtensionPackages().optJSONArray("packages")
+                ?: return@runCatching emptyList<File>()
+            buildList {
+                for (index in 0 until packages.length()) {
+                    val item = packages.optJSONObject(index) ?: continue
+                    val source = item.optString("source").trim()
+                    if (source in loadOptions.disabledPackageSources) continue
+                    if (item.optInt("native_entrypoint_count") <= 0) continue
+                    val installedPath = item.optString("installed_path").trim()
+                    if (installedPath.isBlank()) continue
+                    val packageRoot = alpineRuntime.resolveGuestPath(installedPath)
+                    if (packageRoot.isDirectory) add(packageRoot)
+                }
+            }
+        }.onFailure { throwable ->
+            diagnosticLogger.exception(
+                category = "native_mod",
+                event = "package_discovery_failed",
+                throwable = throwable,
+                level = "warn",
+            )
+        }.getOrDefault(emptyList())
+        (importedPackageRoots + installedPackageRoots)
+            .distinctBy { it.canonicalPath }
             .sortedBy { it.name.lowercase(Locale.US) }
             .forEach { packageRoot ->
                 if (packageRoot.canonicalPath in disabledPaths) return@forEach
@@ -600,6 +658,15 @@ internal fun parseAetherNativeModManifest(
 
     val packageCanonical = packageRoot.canonicalFile
     val id = manifest.optString("name").trim().ifBlank { packageCanonical.name }
+    native.opt("api")
+        .takeUnless { it == null || it == JSONObject.NULL }
+        ?.let { configured ->
+            requireAetherApiCompatibility(
+                configured = configured,
+                currentVersion = AetherNativeApiVersion,
+                label = "Native mod $id",
+            )
+        }
     val entrypoints = native.stringList("entrypoints")
         .ifEmpty { native.stringList("entrypoint") }
     require(entrypoints.isNotEmpty()) {
@@ -639,6 +706,61 @@ internal fun parseAetherNativeModManifest(
         classpath = classpath,
         libraryPaths = libraryPaths,
     )
+}
+
+internal fun requireAetherApiCompatibility(
+    configured: Any,
+    currentVersion: Int,
+    label: String,
+) {
+    val exactVersion = (configured as? Number)?.toInt()
+    if (exactVersion != null) {
+        require(exactVersion > 0 && exactVersion.toDouble() == configured.toDouble()) {
+            "$label api must be a positive integer or an API range object."
+        }
+        require(exactVersion == currentVersion) {
+            "$label requires API $exactVersion, but this runtime provides $currentVersion."
+        }
+        return
+    }
+    require(configured is JSONObject) {
+        "$label api must be a positive integer or an API range object."
+    }
+    val minimum = configured.optPositiveApiVersion("min", label)
+    val maximum = configured.optPositiveApiVersion("max", label)
+    require(minimum != null || maximum != null) {
+        "$label api must declare min, max, or both."
+    }
+    require(minimum == null || maximum == null || minimum <= maximum) {
+        "$label api.min cannot be greater than api.max."
+    }
+    require(minimum == null || currentVersion >= minimum) {
+        "$label requires API $minimum or newer, but this runtime provides $currentVersion."
+    }
+    require(
+        maximum == null ||
+            currentVersion <= maximum ||
+            configured.optBoolean("allowNewer", false)
+    ) {
+        "$label supports API through $maximum, but this runtime provides $currentVersion."
+    }
+}
+
+private fun JSONObject.optPositiveApiVersion(
+    key: String,
+    label: String,
+): Int? {
+    if (!has(key)) return null
+    val value = opt(key)
+    val number = value as? Number
+    require(
+        number != null &&
+            number.toInt() > 0 &&
+            number.toInt().toDouble() == number.toDouble()
+    ) {
+        "$label api.$key must be a positive integer."
+    }
+    return number.toInt()
 }
 
 private fun JSONObject.stringList(key: String): List<String> = when (

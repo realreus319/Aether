@@ -7,17 +7,34 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createJiti } from "jiti/static";
-
-export type AetherJsonObject = Record<string, unknown>;
-export type AetherView = AetherJsonObject | AetherView[] | string | null | undefined;
-export type AetherRenderContext = AetherJsonObject & {
-  extension: {
-    id: string;
-    name: string;
-    path: string;
-  };
-  storage: AetherJsonObject;
-};
+import type {
+  AetherActionContext,
+  AetherComponentDefinition,
+  AetherComponentMode,
+  AetherEventContext,
+  AetherExtensionAPI,
+  AetherExtensionFactory,
+  AetherJsonObject,
+  AetherPageDefinition,
+  AetherRenderContext,
+  AetherSurfaceDefinition,
+  AetherUi,
+  AetherView,
+} from "../../packages/extension-api/src/index.js";
+export type {
+  AetherActionContext,
+  AetherComponentDefinition,
+  AetherComponentMode,
+  AetherEventContext,
+  AetherExtensionAPI,
+  AetherExtensionFactory,
+  AetherJsonObject,
+  AetherPageDefinition,
+  AetherRenderContext,
+  AetherSurfaceDefinition,
+  AetherUi,
+  AetherView,
+} from "../../packages/extension-api/src/index.js";
 
 export interface AetherExtensionTransport {
   requestHost(method: string, args: AetherJsonObject): Promise<AetherJsonObject>;
@@ -25,122 +42,13 @@ export interface AetherExtensionTransport {
   notify(message: string, level: "info" | "warning" | "error"): void;
 }
 
-export interface AetherSurfaceDefinition {
-  id?: string;
-  order?: number;
-  render?: AetherView | ((context: AetherRenderContext) => AetherView | Promise<AetherView>);
-  tree?: AetherView;
-}
-
-export interface AetherPageDefinition extends AetherSurfaceDefinition {
-  id: string;
-  title: string;
-  subtitle?: string;
-  icon?: string;
-}
-
-export type AetherComponentMode = "before" | "after" | "replace" | "wrap" | "hide";
-
-export interface AetherComponentDefinition extends AetherSurfaceDefinition {
-  mode?: AetherComponentMode;
-}
-
-export interface AetherActionContext extends AetherRenderContext {
-  action: string;
-}
-
-export interface AetherEventContext extends AetherRenderContext {
-  event: string;
-}
-
-export interface AetherExtensionAPI {
-  readonly apiVersion: 2;
-  readonly extension: {
-    id: string;
-    name: string;
-    path: string;
-  };
-  readonly ui: typeof ui;
-  readonly host: {
-    invoke(method: string, args?: AetherJsonObject): Promise<AetherJsonObject>;
-  };
-  readonly services: {
-    list(): Promise<AetherJsonObject>;
-    describe(service: string): Promise<AetherJsonObject>;
-    invoke(
-      service: string,
-      method: string,
-      args?: AetherJsonObject,
-    ): Promise<AetherJsonObject>;
-  };
-  readonly state: {
-    get(path?: string): Promise<AetherJsonObject>;
-    patch(path: string, value: unknown): Promise<AetherJsonObject>;
-    transaction(
-      operations: Array<{
-        op?: "set" | "remove";
-        path: string;
-        value?: unknown;
-      }>,
-    ): Promise<AetherJsonObject>;
-  };
-  readonly storage: {
-    get<T = unknown>(key: string, fallback?: T): T;
-    set(key: string, value: unknown): void;
-    delete(key: string): void;
-    clear(): void;
-    snapshot(): AetherJsonObject;
-  };
-  registerSurface(
-    slot: string,
-    definition:
-      | AetherSurfaceDefinition
-      | AetherView
-      | ((context: AetherRenderContext) => AetherView | Promise<AetherView>),
-  ): () => void;
-  registerComponent(
-    target: string,
-    definition:
-      | AetherComponentDefinition
-      | AetherView
-      | ((context: AetherRenderContext) => AetherView | Promise<AetherView>),
-  ): () => void;
-  registerPage(definition: AetherPageDefinition): () => void;
-  registerAction(
-    id: string,
-    handler: (
-      payload: AetherJsonObject,
-      context: AetherActionContext,
-    ) => unknown | Promise<unknown>,
-  ): () => void;
-  on(
-    event: string,
-    handler: (
-      payload: AetherJsonObject,
-      context: AetherEventContext,
-    ) => unknown | Promise<unknown>,
-  ): () => void;
-  intercept(
-    operation: string,
-    handler: (
-      payload: AetherJsonObject,
-      context: AetherEventContext,
-    ) => unknown | Promise<unknown>,
-  ): () => void;
-  invalidate(): void;
-  notify(message: string, level?: "info" | "warning" | "error"): void;
-}
-
-type AetherExtensionFactory = (
-  api: AetherExtensionAPI,
-) => void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>;
-
 interface AetherExtensionDescriptor {
   id: string;
   name: string;
   path: string;
   explicit: boolean;
   packageSource?: string;
+  compatibilityError?: string;
 }
 
 interface DiscoveredAetherEntry {
@@ -148,6 +56,7 @@ interface DiscoveredAetherEntry {
   name: string;
   explicit: boolean;
   packageSource?: string;
+  compatibilityError?: string;
 }
 
 interface LoadedAetherExtension extends AetherExtensionDescriptor {
@@ -217,6 +126,11 @@ interface AetherRuntimeState {
   errors: AetherExtensionError[];
 }
 
+export interface AetherAppExtensionLoadResult {
+  reloaded: boolean;
+  errors: AetherExtensionError[];
+}
+
 const AETHER_API_VERSION = 2;
 const AETHER_AGENT_DIRECTORY = path.join(os.homedir(), ".pi", "agent");
 const AETHER_EXTENSION_ROOT = path.join(os.homedir(), ".aether", "extensions");
@@ -245,6 +159,13 @@ let runtime: AetherRuntimeState = createEmptyRuntime(process.cwd());
 let runtimeVersion = 0;
 let latestHostContext: AetherJsonObject = {};
 let persistedStorage = readPersistedStorage();
+let runtimeOperationQueue: Promise<void> = Promise.resolve();
+let extensionWatchers: fs.FSWatcher[] = [];
+let extensionWatchTimer: NodeJS.Timeout | undefined;
+let currentLoadOptions: {
+  disabledExtensionPaths?: string[];
+  disabledPackageSources?: string[];
+} = {};
 
 function createEmptyRuntime(cwd: string): AetherRuntimeState {
   return {
@@ -319,6 +240,30 @@ function bumpVersion(): void {
   transport.invalidate(runtimeVersion);
 }
 
+async function withRuntimeLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = runtimeOperationQueue;
+  let release: () => void = () => {};
+  runtimeOperationQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+function recordRuntimeError(
+  runtimeState: AetherRuntimeState,
+  error: AetherExtensionError,
+): void {
+  runtimeState.errors.push(error);
+  if (runtimeState.errors.length > 100) {
+    runtimeState.errors.splice(0, runtimeState.errors.length - 100);
+  }
+}
+
 function stableExtensionId(name: string, entryPath: string): string {
   const slug = name
     .toLowerCase()
@@ -328,14 +273,79 @@ function stableExtensionId(name: string, entryPath: string): string {
   return `${slug}:${hash}`;
 }
 
+function manifestApiCompatibilityError(
+  manifest: AetherJsonObject | undefined,
+): string | undefined {
+  const aether = manifest?.aether;
+  if (!aether || typeof aether !== "object" || Array.isArray(aether)) {
+    return undefined;
+  }
+  const configured = (aether as AetherJsonObject).api;
+  if (configured === undefined) return undefined;
+  if (typeof configured === "number") {
+    if (!Number.isInteger(configured) || configured <= 0) {
+      return "aether.api must be a positive integer or an API range object.";
+    }
+    return configured === AETHER_API_VERSION
+      ? undefined
+      : `Requires Aether Script API ${configured}, but this runtime provides ${AETHER_API_VERSION}.`;
+  }
+  if (!configured || typeof configured !== "object" || Array.isArray(configured)) {
+    return "aether.api must be a positive integer or an API range object.";
+  }
+  const api = configured as AetherJsonObject;
+  const minimum = api.min;
+  const maximum = api.max;
+  const allowNewer = api.allowNewer === true;
+  if (
+    minimum !== undefined &&
+    (!Number.isInteger(minimum) || Number(minimum) <= 0)
+  ) {
+    return "aether.api.min must be a positive integer.";
+  }
+  if (
+    maximum !== undefined &&
+    (!Number.isInteger(maximum) || Number(maximum) <= 0)
+  ) {
+    return "aether.api.max must be a positive integer.";
+  }
+  if (minimum === undefined && maximum === undefined) {
+    return "aether.api must declare min, max, or both.";
+  }
+  if (
+    minimum !== undefined &&
+    maximum !== undefined &&
+    Number(minimum) > Number(maximum)
+  ) {
+    return "aether.api.min cannot be greater than aether.api.max.";
+  }
+  if (minimum !== undefined && AETHER_API_VERSION < Number(minimum)) {
+    return `Requires Aether Script API ${minimum} or newer, but this runtime provides ${AETHER_API_VERSION}.`;
+  }
+  if (
+    maximum !== undefined &&
+    AETHER_API_VERSION > Number(maximum) &&
+    !allowNewer
+  ) {
+    return `Supports Aether Script API through ${maximum}, but this runtime provides ${AETHER_API_VERSION}.`;
+  }
+  return undefined;
+}
+
 function manifestAetherEntries(
   directory: string,
   packageSource?: string,
-): Array<{ path: string; name: string; explicit: true }> {
+): Array<{
+  path: string;
+  name: string;
+  explicit: true;
+  compatibilityError?: string;
+}> {
   const manifest = readJsonFile(path.join(directory, "package.json"));
   const aether = asObject(manifest?.aether);
   const configured = aether.extensions;
   if (!Array.isArray(configured)) return [];
+  const compatibilityError = manifestApiCompatibilityError(manifest);
   const packageName =
     (typeof manifest?.name === "string" && manifest.name.trim()) ||
     path.basename(directory);
@@ -346,13 +356,19 @@ function manifestAetherEntries(
       name: packageName,
       explicit: true as const,
       packageSource,
+      compatibilityError,
     }))
     .filter((entry) => fs.existsSync(entry.path));
 }
 
 function implicitAetherEntry(
   candidatePath: string,
-): Array<{ path: string; name: string; explicit: false }> {
+): Array<{
+  path: string;
+  name: string;
+  explicit: false;
+  compatibilityError?: string;
+}> {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(candidatePath);
@@ -367,10 +383,17 @@ function implicitAetherEntry(
   if (!stat.isDirectory()) return [];
   const configured = manifestAetherEntries(candidatePath);
   if (configured.length > 0) return [];
+  const manifest = readJsonFile(path.join(candidatePath, "package.json"));
+  const compatibilityError = manifestApiCompatibilityError(manifest);
   for (const fileName of INDEX_FILE_NAMES) {
     const entryPath = path.join(candidatePath, fileName);
     if (fs.existsSync(entryPath)) {
-      return [{ path: entryPath, name: path.basename(candidatePath), explicit: false }];
+      return [{
+        path: entryPath,
+        name: path.basename(candidatePath),
+        explicit: false,
+        compatibilityError,
+      }];
     }
   }
   return [];
@@ -411,7 +434,7 @@ function createPackageManager(cwd: string): DefaultPackageManager {
 
 async function packageAetherEntries(
   cwd: string,
-): Promise<Array<{ path: string; name: string; explicit: true; packageSource: string }>> {
+): Promise<DiscoveredAetherEntry[]> {
   const packageManager = createPackageManager(cwd);
   await packageManager.resolve();
   return packageManager
@@ -462,6 +485,7 @@ async function discoverAetherExtensionEntries(
       path: resolvedPath,
       explicit: entry.explicit,
       packageSource: entry.packageSource,
+      compatibilityError: entry.compatibilityError,
     }];
   });
 }
@@ -528,7 +552,13 @@ function createRenderContext(extension: LoadedAetherExtension): AetherRenderCont
   };
 }
 
-function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
+function createApi(
+  runtimeState: AetherRuntimeState,
+  extension: LoadedAetherExtension,
+): AetherExtensionAPI {
+  const invalidate = () => {
+    if (runtime === runtimeState) bumpVersion();
+  };
   return {
     apiVersion: AETHER_API_VERSION,
     extension: {
@@ -582,17 +612,17 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
       set(key: string, value: unknown) {
         extensionStorage(extension.id)[key] = cloneJson(value);
         writePersistedStorage();
-        bumpVersion();
+        invalidate();
       },
       delete(key: string) {
         delete extensionStorage(extension.id)[key];
         writePersistedStorage();
-        bumpVersion();
+        invalidate();
       },
       clear() {
         persistedStorage[extension.id] = {};
         writePersistedStorage();
-        bumpVersion();
+        invalidate();
       },
       snapshot() {
         return cloneJson(extensionStorage(extension.id));
@@ -600,18 +630,18 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
     },
     registerSurface(slot, rawDefinition) {
       const definition = normalizeSurfaceDefinition(rawDefinition);
-      const localId = definition.id?.trim() || `${slot}-${runtime.surfaces.size + 1}`;
+      const localId = definition.id?.trim() || `${slot}-${runtimeState.surfaces.size + 1}`;
       const id = scopedId(extension.id, localId);
-      runtime.surfaces.set(id, {
+      runtimeState.surfaces.set(id, {
         id,
         extension,
         slot: slot.trim(),
         order: Number.isFinite(definition.order) ? Number(definition.order) : 0,
         render: renderValue(definition),
       });
-      bumpVersion();
+      invalidate();
       return () => {
-        if (runtime.surfaces.delete(id)) bumpVersion();
+        if (runtimeState.surfaces.delete(id)) invalidate();
       };
     },
     registerComponent(target, rawDefinition) {
@@ -621,7 +651,7 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
         throw new Error("Aether extension components require a target.");
       }
       const localId = definition.id?.trim() ||
-        `${normalizedTarget}-${runtime.components.size + 1}`;
+        `${normalizedTarget}-${runtimeState.components.size + 1}`;
       const id = scopedId(extension.id, localId);
       const requestedMode = definition.mode?.trim().toLowerCase();
       const mode: AetherComponentMode = (
@@ -631,7 +661,7 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
         requestedMode === "wrap" ||
         requestedMode === "hide"
       ) ? requestedMode : "wrap";
-      runtime.components.set(id, {
+      runtimeState.components.set(id, {
         id,
         extension,
         target: normalizedTarget,
@@ -639,9 +669,9 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
         order: Number.isFinite(definition.order) ? Number(definition.order) : 0,
         render: mode === "hide" ? undefined : renderValue(definition),
       });
-      bumpVersion();
+      invalidate();
       return () => {
-        if (runtime.components.delete(id)) bumpVersion();
+        if (runtimeState.components.delete(id)) invalidate();
       };
     },
     registerPage(definition) {
@@ -649,7 +679,7 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
       if (!localId) throw new Error("Aether extension pages require an id.");
       if (!definition.title.trim()) throw new Error("Aether extension pages require a title.");
       const id = scopedId(extension.id, localId);
-      runtime.pages.set(id, {
+      runtimeState.pages.set(id, {
         id,
         localId,
         extension,
@@ -659,24 +689,24 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
         order: Number.isFinite(definition.order) ? Number(definition.order) : 0,
         render: renderValue(definition),
       });
-      bumpVersion();
+      invalidate();
       return () => {
-        if (runtime.pages.delete(id)) bumpVersion();
+        if (runtimeState.pages.delete(id)) invalidate();
       };
     },
     registerAction(id, handler) {
       const localId = id.trim();
       if (!localId) throw new Error("Aether extension actions require an id.");
       const idScoped = scopedId(extension.id, localId);
-      runtime.actions.set(idScoped, { extension, localId, handler });
+      runtimeState.actions.set(idScoped, { extension, localId, handler });
       return () => {
-        runtime.actions.delete(idScoped);
+        runtimeState.actions.delete(idScoped);
       };
     },
     on(event, handler) {
       const eventName = event.trim();
       if (!eventName) throw new Error("Aether extension event handlers require an event name.");
-      return createApiEventRegistration(runtime, extension, eventName, handler);
+      return createApiEventRegistration(runtimeState, extension, eventName, handler);
     },
     intercept(operation, handler) {
       const operationName = operation.trim();
@@ -684,13 +714,13 @@ function createApi(extension: LoadedAetherExtension): AetherExtensionAPI {
         throw new Error("Aether operation interceptors require an operation name.");
       }
       return createApiEventRegistration(
-        runtime,
+        runtimeState,
         extension,
         `operation:${operationName}`,
         handler,
       );
     },
-    invalidate: bumpVersion,
+    invalidate,
     notify(message, level = "info") {
       transport.notify(message, level);
     },
@@ -705,6 +735,7 @@ async function loadFactory(
     fsCache: false,
     tryNative: false,
     virtualModules: {
+      "@baimoqilin/aether-extension-api": aetherExtensionApiModule,
       "@aether/extension-api": aetherExtensionApiModule,
       "@aether/android-extension": aetherExtensionApiModule,
     },
@@ -719,13 +750,21 @@ async function loadFactory(
   return factory as AetherExtensionFactory | undefined;
 }
 
-async function cleanupRuntime(previous: AetherRuntimeState): Promise<void> {
+async function cleanupRuntime(
+  previous: AetherRuntimeState,
+  errorTarget: AetherRuntimeState = previous,
+): Promise<void> {
   for (const extension of [...previous.extensions].reverse()) {
     if (!extension.cleanup) continue;
     try {
       await extension.cleanup();
-    } catch {
-      // Reload should continue even when an extension's teardown fails.
+    } catch (error) {
+      recordRuntimeError(errorTarget, {
+        path: extension.path,
+        extension_id: extension.id,
+        phase: "load",
+        error: `Cleanup failed: ${errorMessage(error)}`,
+      });
     }
   }
 }
@@ -734,27 +773,65 @@ export function configureAetherExtensionTransport(nextTransport: AetherExtension
   transport = nextTransport;
 }
 
-export async function loadAetherAppExtensions(
+function closeExtensionWatchers(): void {
+  for (const watcher of extensionWatchers.splice(0)) {
+    watcher.close();
+  }
+  if (extensionWatchTimer) {
+    clearTimeout(extensionWatchTimer);
+    extensionWatchTimer = undefined;
+  }
+}
+
+function configureExtensionWatchers(runtimeState: AetherRuntimeState): void {
+  closeExtensionWatchers();
+  const watchDirectories = new Set<string>([
+    AETHER_EXTENSION_ROOT,
+    PI_EXTENSION_ROOT,
+    ...runtimeState.extensions.map((extension) => path.dirname(extension.path)),
+  ]);
+  for (const directory of watchDirectories) {
+    if (!fs.existsSync(directory)) continue;
+    try {
+      const watcher = fs.watch(directory, { recursive: true }, () => {
+        if (extensionWatchTimer) clearTimeout(extensionWatchTimer);
+        extensionWatchTimer = setTimeout(() => {
+          extensionWatchTimer = undefined;
+          void loadAetherAppExtensions(runtime.cwd, currentLoadOptions);
+        }, 200);
+        extensionWatchTimer.unref();
+      });
+      watcher.unref();
+      extensionWatchers.push(watcher);
+    } catch {
+      // A failed watcher must not prevent extensions from loading.
+    }
+  }
+}
+
+async function loadAetherAppExtensionsUnlocked(
   cwd: string,
   loadOptions: {
     disabledExtensionPaths?: string[];
     disabledPackageSources?: string[];
   } = {},
-): Promise<void> {
+): Promise<AetherAppExtensionLoadResult> {
   const previous = runtime;
-  runtime = createEmptyRuntime(cwd);
-  await cleanupRuntime(previous);
+  const candidate = createEmptyRuntime(cwd);
   const descriptors = await discoverAetherExtensionEntries(cwd, loadOptions);
   for (const descriptor of descriptors) {
     const extension: LoadedAetherExtension = { ...descriptor };
     try {
+      if (descriptor.compatibilityError) {
+        throw new Error(descriptor.compatibilityError);
+      }
       const factory = await loadFactory(descriptor);
       if (!factory) continue;
-      runtime.extensions.push(extension);
-      const cleanup = await factory(createApi(extension));
+      const cleanup = await factory(createApi(candidate, extension));
       if (typeof cleanup === "function") extension.cleanup = cleanup;
+      candidate.extensions.push(extension);
     } catch (error) {
-      runtime.errors.push({
+      recordRuntimeError(candidate, {
         path: descriptor.path,
         extension_id: descriptor.id,
         phase: "load",
@@ -762,7 +839,34 @@ export async function loadAetherAppExtensions(
       });
     }
   }
+  if (candidate.errors.length > 0) {
+    await cleanupRuntime(candidate);
+    for (const error of candidate.errors) recordRuntimeError(previous, error);
+    bumpVersion();
+    return {
+      reloaded: false,
+      errors: candidate.errors,
+    };
+  }
+  runtime = candidate;
+  currentLoadOptions = cloneJson(loadOptions);
+  configureExtensionWatchers(candidate);
+  await cleanupRuntime(previous, candidate);
   bumpVersion();
+  return {
+    reloaded: true,
+    errors: [],
+  };
+}
+
+export async function loadAetherAppExtensions(
+  cwd: string,
+  loadOptions: {
+    disabledExtensionPaths?: string[];
+    disabledPackageSources?: string[];
+  } = {},
+): Promise<AetherAppExtensionLoadResult> {
+  return withRuntimeLock(() => loadAetherAppExtensionsUnlocked(cwd, loadOptions));
 }
 
 async function renderRegisteredView(
@@ -776,7 +880,7 @@ async function renderRegisteredView(
       : render;
     return cloneJson(value);
   } catch (error) {
-    runtime.errors.push({
+    recordRuntimeError(runtime, {
       path: phasePath,
       extension_id: extension.id,
       phase: "render",
@@ -796,7 +900,7 @@ async function renderRegisteredView(
   }
 }
 
-export async function aetherAppExtensionSnapshot(
+async function aetherAppExtensionSnapshotUnlocked(
   hostContext: AetherJsonObject = {},
 ): Promise<AetherJsonObject> {
   latestHostContext = cloneJson(hostContext);
@@ -857,11 +961,17 @@ export async function aetherAppExtensionSnapshot(
     components,
     pages,
     event_names: [...runtime.events.keys()].sort(),
-    errors: runtime.errors.slice(-100),
+    errors: runtime.errors,
   };
 }
 
-export async function invokeAetherAppExtensionAction(
+export async function aetherAppExtensionSnapshot(
+  hostContext: AetherJsonObject = {},
+): Promise<AetherJsonObject> {
+  return withRuntimeLock(() => aetherAppExtensionSnapshotUnlocked(hostContext));
+}
+
+async function invokeAetherAppExtensionActionUnlocked(
   extensionId: string,
   actionId: string,
   payload: AetherJsonObject,
@@ -886,7 +996,7 @@ export async function invokeAetherAppExtensionAction(
       result: cloneJson(result),
     };
   } catch (error) {
-    runtime.errors.push({
+    recordRuntimeError(runtime, {
       path: action.extension.path,
       extension_id: action.extension.id,
       phase: "action",
@@ -897,7 +1007,23 @@ export async function invokeAetherAppExtensionAction(
   }
 }
 
-export async function dispatchAetherAppExtensionEvent(
+export async function invokeAetherAppExtensionAction(
+  extensionId: string,
+  actionId: string,
+  payload: AetherJsonObject,
+  hostContext: AetherJsonObject = {},
+): Promise<AetherJsonObject> {
+  return withRuntimeLock(() =>
+    invokeAetherAppExtensionActionUnlocked(
+      extensionId,
+      actionId,
+      payload,
+      hostContext,
+    )
+  );
+}
+
+async function dispatchAetherAppExtensionEventUnlocked(
   eventName: string,
   payload: AetherJsonObject,
   hostContext: AetherJsonObject = {},
@@ -936,7 +1062,7 @@ export async function dispatchAetherAppExtensionEvent(
       }
       if (cancelled) break;
     } catch (error) {
-      runtime.errors.push({
+      recordRuntimeError(runtime, {
         path: registration.extension.path,
         extension_id: registration.extension.id,
         phase: "event",
@@ -953,6 +1079,16 @@ export async function dispatchAetherAppExtensionEvent(
     payload: chainedPayload,
     results,
   };
+}
+
+export async function dispatchAetherAppExtensionEvent(
+  eventName: string,
+  payload: AetherJsonObject,
+  hostContext: AetherJsonObject = {},
+): Promise<AetherJsonObject> {
+  return withRuntimeLock(() =>
+    dispatchAetherAppExtensionEventUnlocked(eventName, payload, hostContext)
+  );
 }
 
 export function aetherAppExtensionCountForManifest(
@@ -1012,7 +1148,7 @@ export const ui = {
   core(properties: AetherJsonObject = {}) {
     return node("core", properties);
   },
-} as const;
+} as const satisfies AetherUi;
 
 export function defineAetherExtension<T extends AetherExtensionFactory>(factory: T): T {
   return factory;

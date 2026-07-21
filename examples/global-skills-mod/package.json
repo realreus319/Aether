@@ -3,8 +3,15 @@
   "version": "1.0.0",
   "description": "Minecraft-style replacement of Aether's native skill tray with persistent global defaults.",
   "aether": {
+    "api": {
+      "min": 2,
+      "max": 2
+    },
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@baimoqilin/aether-extension-api": "^2.0.0"
   }
 }

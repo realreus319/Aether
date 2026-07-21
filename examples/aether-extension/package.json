@@ -9,8 +9,15 @@
     ]
   },
   "aether": {
+    "api": {
+      "min": 2,
+      "max": 2
+    },
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@baimoqilin/aether-extension-api": "^2.0.0"
   }
 }

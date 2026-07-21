@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   defineAetherExtension,
   ui,
-} from "@aether/extension-api";
+} from "@baimoqilin/aether-extension-api";
 
 export default function activatePi(pi: ExtensionAPI) {
   pi.registerCommand("aether-example", {
