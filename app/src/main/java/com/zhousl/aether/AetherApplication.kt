@@ -59,6 +59,11 @@ class AetherApplication : Application() {
         runtime.initialize()
     }
 
+    override fun onTerminate() {
+        runtime.nativeModManager.shutdown()
+        super.onTerminate()
+    }
+
     fun initializePostHog() {
         if (isPostHogInitialized || BuildConfig.POSTHOG_API_KEY.isBlank()) return
         synchronized(this) {
@@ -117,16 +122,17 @@ class AetherAppRuntime(
         context = application,
         diagnosticLogger = diagnosticLogger,
     )
+    val piKernelBridge = PiKernelBridge(
+        alpineRuntime = alpineRuntime,
+        diagnosticLogger = diagnosticLogger,
+    )
     val nativeModManager = AetherNativeModManager(
         context = application,
         application = application,
         alpineRuntime = alpineRuntime,
+        piKernelBridge = piKernelBridge,
         kernel = modKernel,
         piExtensionStateRepository = piExtensionStateRepository,
-        diagnosticLogger = diagnosticLogger,
-    )
-    val piKernelBridge = PiKernelBridge(
-        alpineRuntime = alpineRuntime,
         diagnosticLogger = diagnosticLogger,
     )
     val piCompletionClient = PiCompletionClient(

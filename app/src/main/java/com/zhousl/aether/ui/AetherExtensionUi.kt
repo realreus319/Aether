@@ -113,6 +113,7 @@ const val AetherExtensionComponentSettingsScreen = "settings.screen"
 @Immutable
 data class AetherExtensionUiController(
     val snapshot: AetherAppExtensionSnapshot,
+    val runtimeError: String,
     val nativeComponents: List<AetherNativeComponentRegistration>,
     val uiState: AetherUiState,
     val publicState: JSONObject,

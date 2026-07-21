@@ -134,6 +134,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlin.math.roundToInt
 import com.zhousl.aether.data.AetherPrivacyPolicyUrl
+import com.zhousl.aether.data.AetherAppExtensionError
 import com.zhousl.aether.data.AetherWebsiteUrl
 import com.zhousl.aether.data.AgentModeAuthorizationIssue
 import com.zhousl.aether.data.AgentModeAuthorizationMethod
@@ -3450,6 +3451,58 @@ private fun NativeModStatusCard(
 }
 
 @Composable
+private fun ScriptExtensionStatusCard(
+    runtimeError: String,
+    errors: List<AetherAppExtensionError>,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.WarningAmber,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(22.dp),
+            )
+            Text(
+                text = stringResource(R.string.settings_script_extension_errors_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = AetherOnSurface,
+            )
+        }
+        runtimeError.takeIf(String::isNotBlank)?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = AetherOnSurface,
+            )
+        }
+        errors.takeLast(5).forEach { error ->
+            Text(
+                text = stringResource(
+                    R.string.settings_script_extension_error_item,
+                    error.phase,
+                    error.extensionId.ifBlank { error.path },
+                    error.message,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
 private fun PiExtensionsPage(
     installedExtensions: List<InstalledPiExtension>,
     nativeModState: AetherNativeModState,
@@ -3467,6 +3520,9 @@ private fun PiExtensionsPage(
     onSelectPackage: (PiExtensionCatalogEntry) -> Unit,
     onBack: () -> Unit,
 ) {
+    val scriptExtensionController = LocalAetherExtensionUiController.current
+    val scriptExtensionErrors = scriptExtensionController?.snapshot?.errors.orEmpty()
+    val scriptExtensionRuntimeError = scriptExtensionController?.runtimeError.orEmpty()
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var searchValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(""))
@@ -3506,6 +3562,14 @@ private fun PiExtensionsPage(
             color = AetherOnSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp),
         )
+
+        if (scriptExtensionRuntimeError.isNotBlank() || scriptExtensionErrors.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            ScriptExtensionStatusCard(
+                runtimeError = scriptExtensionRuntimeError,
+                errors = scriptExtensionErrors,
+            )
+        }
 
         if (
             nativeModState.safeModeActive ||

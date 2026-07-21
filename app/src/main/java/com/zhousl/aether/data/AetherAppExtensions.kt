@@ -116,6 +116,7 @@ class AetherAppExtensionManager(
         extraBufferCapacity = 8,
     )
     private var subscriptionJob: Job? = null
+    private var invalidationJob: Job? = null
     private var latestContextJson = "{}"
 
     @Volatile
@@ -180,7 +181,14 @@ class AetherAppExtensionManager(
                     onEvent = ::handleBridgeEvent,
                 )
                 val snapshot = parseSnapshot(response.optJSONObject("snapshot"))
-                _state.value = AetherAppExtensionState(snapshot = snapshot)
+                val reloadError = response.extensionReloadError()
+                _state.value = AetherAppExtensionState(
+                    snapshot = snapshot,
+                    error = reloadError,
+                )
+                if (!response.optBoolean("reloaded", true)) {
+                    error(reloadError.ifBlank { "Aether extensions rejected the reload." })
+                }
                 snapshot
             }
         }.onFailure(::recordFailure)
@@ -272,9 +280,7 @@ class AetherAppExtensionManager(
     ) {
         when (event) {
             "aether_invalidated" -> {
-                scope.launch {
-                    refresh()
-                }
+                scheduleRefresh()
             }
 
             "aether_notification" -> {
@@ -307,6 +313,14 @@ class AetherAppExtensionManager(
     private fun currentContext(): JSONObject =
         runCatching { JSONObject(latestContextJson) }.getOrElse { JSONObject() }
 
+    private fun scheduleRefresh() {
+        if (invalidationJob?.isActive == true) return
+        invalidationJob = scope.launch {
+            delay(100L)
+            refresh()
+        }
+    }
+
     private fun recordFailure(throwable: Throwable) {
         if (throwable is CancellationException) return
         diagnosticLogger.exception(
@@ -319,6 +333,20 @@ class AetherAppExtensionManager(
             error = throwable.message ?: throwable.javaClass.simpleName,
         )
     }
+}
+
+internal fun JSONObject.extensionReloadError(): String {
+    if (optBoolean("reloaded", true)) return ""
+    val errors = optJSONArray("errors") ?: return "Aether extensions rejected the reload."
+    return buildList {
+        for (index in 0 until errors.length()) {
+            errors.optJSONObject(index)
+                ?.optString("error")
+                ?.takeIf(String::isNotBlank)
+                ?.let(::add)
+        }
+    }.distinct().take(3).joinToString("; ")
+        .ifBlank { "Aether extensions rejected the reload." }
 }
 
 internal fun parseAetherAppExtensionSnapshot(json: JSONObject?): AetherAppExtensionSnapshot {

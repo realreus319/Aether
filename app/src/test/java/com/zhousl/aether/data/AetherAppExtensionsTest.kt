@@ -106,4 +106,33 @@ class AetherAppExtensionsTest {
         )
         assertTrue("before_send" in snapshot.eventNames)
     }
+
+    @Test
+    fun rejectedReloadSurfacesDistinctFactoryErrors() {
+        val response = JSONObject(
+            """
+            {
+              "reloaded": false,
+              "errors": [
+                {"error":"Factory failed"},
+                {"error":"Factory failed"},
+                {"error":"Cleanup failed"}
+              ]
+            }
+            """.trimIndent()
+        )
+
+        assertEquals(
+            "Factory failed; Cleanup failed",
+            response.extensionReloadError(),
+        )
+    }
+
+    @Test
+    fun successfulReloadHasNoReloadError() {
+        assertEquals(
+            "",
+            JSONObject().put("reloaded", true).extensionReloadError(),
+        )
+    }
 }

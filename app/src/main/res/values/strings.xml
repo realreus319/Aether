@@ -887,6 +887,8 @@
     <string name="settings_pi_extensions">Extensions</string>
     <string name="settings_pi_extensions_count_configured">%1$d installed</string>
     <string name="settings_pi_extensions_warning">Extension packages can modify the Pi agent and Aether’s Android UI or app logic. They run as trusted code with broad access to the agent, app host, runtimes, and workspace.</string>
+    <string name="settings_script_extension_errors_title">Script extension errors</string>
+    <string name="settings_script_extension_error_item">%1$s · %2$s\n%3$s</string>
     <string name="settings_extension_discover">Discover</string>
     <string name="settings_extension_installed">Installed</string>
     <string name="settings_search_extensions">Search packages</string>

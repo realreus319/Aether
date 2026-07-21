@@ -26,6 +26,7 @@ private const val MaxExtensionArchiveBytes = 32L * 1024L * 1024L
 private const val MaxExtensionExtractedBytes = 128L * 1024L * 1024L
 private const val MaxExtensionEntryBytes = 16L * 1024L * 1024L
 private const val MaxExtensionZipEntries = 4096
+private const val ExtensionDependencyInstallTimeoutMillis = 5L * 60L * 1000L
 private val ExtensionFilePattern = Regex(""".*\.(?:[cm]?[jt]s)$""", RegexOption.IGNORE_CASE)
 private val ExtensionIndexNames = setOf(
     "index.ts",
@@ -415,14 +416,22 @@ class PiExtensionManager(
 
     suspend fun installPackage(source: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            piKernelBridge.installExtensionPackage(source, stateRepository.loadOptions())
+            val response = piKernelBridge.installExtensionPackage(
+                source,
+                stateRepository.loadOptions(),
+            )
+            requireExtensionReloadSucceeded(response.optJSONObject("reload"))
             Unit
         }
     }
 
     suspend fun updatePackage(source: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            piKernelBridge.updateExtensionPackage(source, stateRepository.loadOptions())
+            val response = piKernelBridge.updateExtensionPackage(
+                source,
+                stateRepository.loadOptions(),
+            )
+            requireExtensionReloadSucceeded(response.optJSONObject("reload"))
             Unit
         }
     }
@@ -439,11 +448,14 @@ class PiExtensionManager(
                     require(response.optBoolean("removed")) {
                         "No installed Pi extension matched ${extension.source}."
                     }
+                    requireExtensionReloadSucceeded(response.optJSONObject("reload"))
                 }
 
                 PiExtensionInstallKind.Imported -> {
                     removeImportedExtension(extension.installedPath)
-                    piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+                    requireExtensionReloadSucceeded(
+                        piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+                    )
                 }
             }
             Unit
@@ -456,7 +468,9 @@ class PiExtensionManager(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             stateRepository.setEnabled(extension.id, enabled)
-            piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+            requireExtensionReloadSucceeded(
+                piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+            )
             Unit
         }
     }
@@ -467,14 +481,35 @@ class PiExtensionManager(
         runCatching {
             val displayName = queryDisplayName(uri)
             val importRoot = alpineRuntime.ensureGuestDirectory(AetherExtensionGuestDirectory)
-            val installedFile = if (displayName.endsWith(".zip", ignoreCase = true)) {
+            val transaction = if (displayName.endsWith(".zip", ignoreCase = true)) {
                 importZip(uri, displayName, importRoot)
             } else {
                 importExtensionFile(uri, displayName, importRoot)
             }
-            piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
-            importedExtension(installedFile, "aether")
-                ?: error("The imported source did not contain a loadable Aether or Pi extension.")
+            try {
+                requireExtensionReloadSucceeded(
+                    piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+                )
+                val installed = importedExtension(transaction.destination, "aether")
+                    ?: error(
+                        "The imported source did not contain a loadable Aether or Pi extension."
+                    )
+                transaction.commit()
+                installed
+            } catch (throwable: Throwable) {
+                val rollbackFailure = runCatching {
+                    transaction.rollback()
+                }.exceptionOrNull()
+                rollbackFailure?.let(throwable::addSuppressed)
+                if (rollbackFailure == null) {
+                    runCatching {
+                        requireExtensionReloadSucceeded(
+                            piKernelBridge.reloadAllExtensions(stateRepository.loadOptions())
+                        )
+                    }.exceptionOrNull()?.let(throwable::addSuppressed)
+                }
+                throw throwable
+            }
         }
     }
 
@@ -568,7 +603,7 @@ class PiExtensionManager(
         uri: Uri,
         displayName: String,
         importRoot: File,
-    ): File {
+    ): ImportedExtensionTransaction {
         require(ExtensionFilePattern.matches(displayName)) {
             "Choose a Pi extension JavaScript/TypeScript file or a .zip package."
         }
@@ -582,25 +617,17 @@ class PiExtensionManager(
                     copyWithLimit(input, output, MaxExtensionEntryBytes)
                 }
             }
-            if (destination.exists()) destination.deleteRecursively()
-            require(staging.renameTo(destination) || runCatching {
-                staging.copyTo(destination, overwrite = true)
-                staging.delete()
-                true
-            }.getOrDefault(false)) {
-                "Unable to store the imported extension."
-            }
-            return destination
+            return replaceImportedExtension(staging, destination)
         } finally {
             staging.deleteRecursively()
         }
     }
 
-    private fun importZip(
+    private suspend fun importZip(
         uri: Uri,
         displayName: String,
         importRoot: File,
-    ): File {
+    ): ImportedExtensionTransaction {
         val extractionRoot = File(importRoot, ".aether-import-${UUID.randomUUID()}").apply {
             require(mkdirs()) { "Unable to prepare extension import." }
         }
@@ -620,19 +647,41 @@ class PiExtensionManager(
                 manifestName.ifBlank { displayName.substringBeforeLast('.') }
             )
             val staging = File(importRoot, ".aether-import-${UUID.randomUUID()}-$destinationName")
-            packageRoot.copyRecursively(staging, overwrite = false)
-            val destination = File(importRoot, destinationName)
-            if (destination.exists()) destination.deleteRecursively()
-            require(staging.renameTo(destination) || runCatching {
-                staging.copyRecursively(destination, overwrite = true)
+            try {
+                require(packageRoot.copyRecursively(staging, overwrite = false)) {
+                    "Unable to stage the imported Extension package."
+                }
+                installImportedPackageDependencies(
+                    packageRoot = staging,
+                    guestDirectory = "$AetherExtensionGuestDirectory/${staging.name}",
+                )
+                val destination = File(importRoot, destinationName)
+                return replaceImportedExtension(staging, destination)
+            } finally {
                 staging.deleteRecursively()
-                true
-            }.getOrDefault(false)) {
-                "Unable to store the imported extension package."
             }
-            return destination
         } finally {
             extractionRoot.deleteRecursively()
+        }
+    }
+
+    private suspend fun installImportedPackageDependencies(
+        packageRoot: File,
+        guestDirectory: String,
+    ) {
+        val plan = npmInstallPlanForPackage(packageRoot) ?: return
+        val result = JSONObject(
+            alpineRuntime.executeCommand(
+                command = plan.command,
+                workingDirectory = guestDirectory,
+                awaitTimeoutMillis = ExtensionDependencyInstallTimeoutMillis,
+            )
+        )
+        require(result.optBoolean("ok")) {
+            result.optString("stderr").trim()
+                .ifBlank { result.optString("stdout").trim() }
+                .ifBlank { result.optString("errmsg").trim() }
+                .ifBlank { "Unable to install Extension npm dependencies." }
         }
     }
 
@@ -710,6 +759,33 @@ class PiExtensionManager(
                     .isNotEmpty()
             }.getOrDefault(false)
 
+    private fun replaceImportedExtension(
+        staging: File,
+        destination: File,
+    ): ImportedExtensionTransaction {
+        val backup = destination
+            .takeIf(File::exists)
+            ?.let {
+                File(
+                    requireNotNull(destination.parentFile),
+                    ".aether-import-backup-${UUID.randomUUID()}-${destination.name}",
+                ).also { backup ->
+                    moveImportedExtension(destination, backup)
+                }
+            }
+        return try {
+            moveImportedExtension(staging, destination)
+            ImportedExtensionTransaction(
+                destination = destination,
+                backup = backup,
+            )
+        } catch (throwable: Throwable) {
+            destination.deleteRecursively()
+            backup?.takeIf(File::exists)?.let { moveImportedExtension(it, destination) }
+            throw throwable
+        }
+    }
+
     private suspend fun removeImportedExtension(installedPath: String) {
         val target = File(installedPath).canonicalFile
         val allowedRoots = listOf(
@@ -738,6 +814,110 @@ class PiExtensionManager(
             ?.takeIf(String::isNotBlank)
             ?: uri.lastPathSegment?.substringAfterLast('/')?.trim().orEmpty()
                 .ifBlank { "extension.ts" }
+    }
+}
+
+internal fun requireExtensionReloadSucceeded(reload: JSONObject?) {
+    if (reload == null || reload.optBoolean("succeeded", true)) return
+    val messages = buildList {
+        reload.optJSONObject("aether_reload")
+            ?.optJSONArray("errors")
+            ?.let { errors ->
+                for (index in 0 until errors.length()) {
+                    errors.optJSONObject(index)
+                        ?.optString("error")
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::add)
+                }
+            }
+        reload.optJSONArray("sessions")?.let { sessions ->
+            for (sessionIndex in 0 until sessions.length()) {
+                val session = sessions.optJSONObject(sessionIndex) ?: continue
+                val sessionId = session.optString("session_id")
+                val errors = session.optJSONArray("errors") ?: continue
+                for (errorIndex in 0 until errors.length()) {
+                    val message = errors.optJSONObject(errorIndex)
+                        ?.optString("error")
+                        ?.takeIf(String::isNotBlank)
+                        ?: continue
+                    add(if (sessionId.isBlank()) message else "$sessionId: $message")
+                }
+            }
+        }
+    }.distinct()
+    error(
+        messages.take(3).joinToString("; ")
+            .ifBlank { "Extension files changed, but one or more runtimes rejected the reload." }
+    )
+}
+
+internal data class NpmInstallPlan(
+    val command: String,
+)
+
+internal fun npmInstallPlanForPackage(packageRoot: File): NpmInstallPlan? {
+    if (File(packageRoot, "node_modules").isDirectory) return null
+    val manifest = runCatching {
+        File(packageRoot, "package.json")
+            .takeIf(File::isFile)
+            ?.readText(Charsets.UTF_8)
+            ?.let(::JSONObject)
+    }.getOrNull() ?: return null
+    val dependencyKeys = listOf(
+        "dependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    )
+    val hasDependencies = dependencyKeys.any { key ->
+        manifest.optJSONObject(key)?.length()?.let { it > 0 } == true
+    }
+    if (!hasDependencies) return null
+    val installCommand = if (File(packageRoot, "package-lock.json").isFile) {
+        "npm ci"
+    } else {
+        "npm install"
+    }
+    return NpmInstallPlan(
+        command = "$installCommand --omit=dev --no-audit --no-fund",
+    )
+}
+
+private class ImportedExtensionTransaction(
+    val destination: File,
+    private val backup: File?,
+) {
+    fun commit() {
+        backup?.deleteRecursively()
+    }
+
+    fun rollback() {
+        destination.deleteRecursively()
+        backup?.takeIf(File::exists)?.let { moveImportedExtension(it, destination) }
+    }
+}
+
+private fun moveImportedExtension(
+    source: File,
+    destination: File,
+) {
+    require(!destination.exists()) {
+        "Unable to replace the existing Extension."
+    }
+    val moved = source.renameTo(destination) || runCatching {
+        if (source.isDirectory) {
+            require(source.copyRecursively(destination, overwrite = false))
+            require(source.deleteRecursively())
+        } else {
+            source.copyTo(destination, overwrite = false)
+            require(source.delete())
+        }
+        true
+    }.getOrElse {
+        destination.deleteRecursively()
+        false
+    }
+    require(moved) {
+        "Unable to store the imported Extension."
     }
 }
 

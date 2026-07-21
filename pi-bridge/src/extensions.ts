@@ -60,6 +60,7 @@ const virtualModules: Record<string, unknown> = {
   "@mariozechner/pi-ai/oauth": piAiOauth,
   "@mariozechner/pi-coding-agent": piCodingAgent,
   "@mariozechner/pi-tui": piTui,
+  "@baimoqilin/aether-extension-api": aetherExtensionApiModule,
   "@aether/extension-api": aetherExtensionApiModule,
   "@aether/android-extension": aetherExtensionApiModule,
 };
@@ -93,6 +94,7 @@ export interface AetherInstalledExtensionPackage {
   description: string;
   extensionCount: number;
   aetherExtensionCount: number;
+  nativeEntrypointCount: number;
   skillCount: number;
   promptCount: number;
   themeCount: number;
@@ -229,6 +231,29 @@ function manifestExtensionCount(manifest: Record<string, unknown> | undefined): 
     : 0;
 }
 
+function manifestNativeEntrypointCount(
+  manifest: Record<string, unknown> | undefined,
+): number {
+  const aether = manifest?.aether;
+  if (!aether || typeof aether !== "object" || Array.isArray(aether)) return 0;
+  const native = (aether as Record<string, unknown>).native;
+  if (!native || typeof native !== "object" || Array.isArray(native)) return 0;
+  const nativeManifest = native as Record<string, unknown>;
+  if (nativeManifest.enabled === false) return 0;
+  const countConfigured = (configured: unknown): number => {
+    if (Array.isArray(configured)) {
+      return configured.filter((entry) =>
+        typeof entry === "string" && entry.trim().length > 0
+      ).length;
+    }
+    return typeof configured === "string" && configured.trim().length > 0
+      ? 1
+      : 0;
+  };
+  return countConfigured(nativeManifest.entrypoints) ||
+    countConfigured(nativeManifest.entrypoint);
+}
+
 interface AetherPackageResources {
   extensions: string[];
   skills: string[];
@@ -271,6 +296,7 @@ function installedPackagePayload(
     description: typeof manifest?.description === "string" ? manifest.description : "",
     extensionCount: resources.extensions.length || manifestExtensionCount(manifest),
     aetherExtensionCount: aetherAppExtensionCountForManifest(manifest),
+    nativeEntrypointCount: manifestNativeEntrypointCount(manifest),
     skillCount: resources.skills.length,
     promptCount: resources.prompts.length,
     themeCount: resources.themes.length,

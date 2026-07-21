@@ -247,6 +247,7 @@ fun AetherApp(
     ) {
         AetherExtensionUiController(
             snapshot = extensionState.snapshot,
+            runtimeError = extensionState.error,
             nativeComponents = nativeComponents,
             uiState = uiState,
             publicState = extensionContext,

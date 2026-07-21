@@ -24,8 +24,16 @@ security boundaries.
     "extensions": ["./agent.ts"]
   },
   "aether": {
+    "api": {
+      "min": 2,
+      "max": 2
+    },
     "extensions": ["./android.ts"],
     "native": {
+      "api": {
+        "min": 1,
+        "max": 1
+      },
       "classpath": ["./native/mod.dex"],
       "libraryPath": ["./native/lib"],
       "entrypoints": ["com.example.aether.MyNativeMod"]
@@ -38,11 +46,33 @@ Script-only packages do not need `aether.native`. Native-only zip packages are
 also importable. Imported packages live under `~/.aether/extensions` inside
 Aether's managed Alpine filesystem.
 
-Script changes hot reload. Native classpaths are discovered and loaded only
-during app process startup, so installing, updating, removing, or changing a
-Native Mod requires restarting Aether.
+Script files under `~/.aether/extensions`, `~/.pi/agent/extensions`, and
+installed package entrypoint directories are watched and reloaded
+automatically. Reloads are atomic: all Script factories must load successfully
+before the new runtime replaces the previous one. A failed load or cleanup is
+reported on the Extensions page, and a rejected load keeps the last working
+runtime active.
+
+Native classpaths from imported extensions and npm-installed packages are
+discovered and loaded only during app process startup, so installing, updating,
+removing, or changing a Native Mod requires restarting Aether.
+
+ZIP imports install runtime npm dependencies before replacing the currently
+installed copy. A bundled `node_modules` directory is used as-is; otherwise
+Aether runs `npm ci --omit=dev` when a lockfile is present and
+`npm install --omit=dev` when it is not. Failed dependency installation or
+runtime reload restores the previous imported package.
 
 ## Script Mod API v2
+
+Install the declarations for editor completion and TypeScript checking:
+
+```bash
+npm install --save-dev @baimoqilin/aether-extension-api
+```
+
+The npm package contains declarations only. Aether supplies the implementation
+through its trusted Script runtime.
 
 ```ts
 interface AetherExtensionAPI {
@@ -88,12 +118,36 @@ interface AetherExtensionAPI {
 Factories may be async and may return a cleanup function. Extension storage is
 persisted in `~/.aether/app-extension-state.json`.
 
+### API compatibility
+
+Script packages may constrain the integer Script API version:
+
+```json
+{
+  "aether": {
+    "api": {
+      "min": 2,
+      "max": 2,
+      "allowNewer": false
+    }
+  }
+}
+```
+
+An exact integer such as `"api": 2` is also accepted. Missing declarations
+remain compatible for legacy packages. An incompatible or malformed range
+rejects the atomic reload and leaves the last working runtime active.
+
+Native Mods use an independent version range under `aether.native.api`.
+The current Native API version is `1`. `allowNewer: true` lets a Mod opt into
+loading on a runtime newer than its declared maximum.
+
 For a package shared with Pi, keep the Pi factory as the default export and
 export the Aether factory as `activateAether` or `aether`:
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { defineAetherExtension, ui } from "@aether/extension-api";
+import { defineAetherExtension, ui } from "@baimoqilin/aether-extension-api";
 
 export default function activatePi(pi: ExtensionAPI) {
   pi.registerCommand("hello", {

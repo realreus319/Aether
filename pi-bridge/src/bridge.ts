@@ -166,6 +166,7 @@ const pendingHostToolRequests = new Map<string, PendingHostToolRequest>();
 const pendingAetherHostCalls = new Map<string, PendingAetherHostCall>();
 const aetherSubscriberRequestIds = new Set<string>();
 const aetherOperationContext = new AsyncLocalStorage<string>();
+const activeAetherOperationRequestIds = new Set<string>();
 const pendingAuthPrompts = new Map<
   string,
   {
@@ -415,8 +416,11 @@ function emitAetherSubscriberEvent(event: string, payload: JsonObject = {}): voi
 }
 
 function requestAetherHost(method: string, args: JsonObject): Promise<JsonObject> {
-  const requestId = aetherOperationContext.getStore()
-    ?? aetherSubscriberRequestIds.values().next().value;
+  const operationRequestId = aetherOperationContext.getStore();
+  const requestId = operationRequestId &&
+      activeAetherOperationRequestIds.has(operationRequestId)
+    ? operationRequestId
+    : aetherSubscriberRequestIds.values().next().value;
   if (!requestId) {
     throw new Error("The Aether Android host is not subscribed.");
   }
@@ -433,6 +437,18 @@ function requestAetherHost(method: string, args: JsonObject): Promise<JsonObject
     }, 2 * 60 * 1000);
     pendingAetherHostCalls.set(callId, { resolve, reject, timeout });
   });
+}
+
+async function runAetherOperation<T>(
+  requestId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  activeAetherOperationRequestIds.add(requestId);
+  try {
+    return await aetherOperationContext.run(requestId, operation);
+  } finally {
+    activeAetherOperationRequestIds.delete(requestId);
+  }
 }
 
 function resolveAetherHostCall(payload: JsonObject): boolean {
@@ -2438,6 +2454,7 @@ async function installedExtensionPackagesPayload(): Promise<JsonObject> {
       description: installedPackage.description,
       extension_count: installedPackage.extensionCount,
       aether_extension_count: installedPackage.aetherExtensionCount,
+      native_entrypoint_count: installedPackage.nativeEntrypointCount,
       skill_count: installedPackage.skillCount,
       prompt_count: installedPackage.promptCount,
       theme_count: installedPackage.themeCount,
@@ -2462,10 +2479,15 @@ async function reloadAllExtensionSessions(
       ...result,
     });
   }
-  await loadAetherAppExtensions(process.cwd(), loadOptions);
+  const aetherReload = await loadAetherAppExtensions(process.cwd(), loadOptions);
+  const sessionReloadSucceeded = results.every((result) =>
+    Array.isArray(result.errors) && result.errors.length === 0
+  );
   return {
+    succeeded: sessionReloadSucceeded && aetherReload.reloaded,
     session_count: results.length,
     sessions: results,
+    aether_reload: aetherReload,
     aether: await aetherAppExtensionSnapshot(),
   };
 }
@@ -2509,13 +2531,13 @@ async function reloadAetherAppExtensionsRequest(
   id: string,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return aetherOperationContext.run(id, async () => {
-    await loadAetherAppExtensions(
+  return runAetherOperation(id, async () => {
+    const result = await loadAetherAppExtensions(
       process.cwd(),
       extensionLoadOptionsFromPayload(payload),
     );
     return {
-      reloaded: true,
+      ...result,
       snapshot: await aetherAppExtensionSnapshot(asObject(payload.context)),
     };
   });
@@ -2525,7 +2547,7 @@ async function getAetherAppExtensionsRequest(
   id: string,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return aetherOperationContext.run(id, async () => ({
+  return runAetherOperation(id, async () => ({
     snapshot: await aetherAppExtensionSnapshot(asObject(payload.context)),
   }));
 }
@@ -2534,7 +2556,7 @@ async function invokeAetherAppExtensionActionRequest(
   id: string,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return aetherOperationContext.run(id, async () => ({
+  return runAetherOperation(id, async () => ({
     ...(await invokeAetherAppExtensionAction(
       asString(payload.extension_id),
       asString(payload.action),
@@ -2549,7 +2571,7 @@ async function dispatchAetherAppExtensionEventRequest(
   id: string,
   payload: JsonObject,
 ): Promise<JsonObject> {
-  return aetherOperationContext.run(id, async () => ({
+  return runAetherOperation(id, async () => ({
     ...(await dispatchAetherAppExtensionEvent(
       asString(payload.event),
       asObject(payload.data),
@@ -2651,7 +2673,7 @@ async function handleRequest(request: BridgeRequest): Promise<void> {
       writeResponse(id, await updateExtensionPackage(payload));
       return;
     case "reload_all_extensions":
-      writeResponse(id, await reloadAllExtensionSessions());
+      writeResponse(id, await reloadAllExtensionSessions(payload));
       return;
     case "reload_aether_extensions":
       writeResponse(id, await reloadAetherAppExtensionsRequest(id, payload));

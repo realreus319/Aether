@@ -4,6 +4,8 @@ import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -61,6 +63,35 @@ class AetherNativeModsTest {
                     """.trimIndent()
                 ),
             )
+        )
+    }
+
+    @Test
+    fun rejectsIncompatibleNativeApiRange() {
+        val failure = try {
+            requireAetherApiCompatibility(
+                configured = JSONObject().put("min", 2).put("max", 3),
+                currentVersion = 1,
+                label = "Native mod demo",
+            )
+            fail("Expected incompatible API range")
+            return
+        } catch (throwable: IllegalArgumentException) {
+            throwable
+        }
+
+        assertTrue(failure.message.orEmpty().contains("requires API 2 or newer"))
+    }
+
+    @Test
+    fun allowsNewerNativeApiWhenManifestOptsIn() {
+        requireAetherApiCompatibility(
+            configured = JSONObject()
+                .put("min", 1)
+                .put("max", 1)
+                .put("allowNewer", true),
+            currentVersion = 2,
+            label = "Native mod demo",
         )
     }
 }
