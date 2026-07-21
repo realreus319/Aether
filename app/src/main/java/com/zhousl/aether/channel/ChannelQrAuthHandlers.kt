@@ -115,7 +115,7 @@ internal class WeComQrAuthHandler(
     }
 
     private companion object {
-        val SettingsPattern = Regex("window\\.settings\\s*=\\s*(\\{[^<]+})")
+        val SettingsPattern = Regex("""window\.settings\s*=\s*(\{[^<]+\})""")
     }
 }
 
