@@ -247,6 +247,7 @@ class SessionExecutionManager(
         var activeMcpServerIds: List<String> = emptyList()
         var agentModeEnabled = false
         val persistedSession = chatRepository.getSessionWithMessages(request.sessionId)
+        var chromeEnabled = false
 
         chatStateStore.updateAndFlush { persisted ->
             val sessions = persisted.sessions.toMutableList()
@@ -271,6 +272,7 @@ class SessionExecutionManager(
             activeSkills = session.activeSkills
             activeMcpServerIds = session.activeMcpServerIds
             agentModeEnabled = session.agentModeEnabled
+            chromeEnabled = session.chromeEnabled
             sessions.add(0, session)
             persisted.copy(sessions = sessions)
         }
@@ -289,7 +291,7 @@ class SessionExecutionManager(
                 activeSkills = activeSkills,
                 activeMcpServerIds = activeMcpServerIds,
                 agentModeEnabled = agentModeEnabled,
-                providerConfigs = providerConfigs,
+                chromeEnabled = chromeEnabled
             )
         )
     }
