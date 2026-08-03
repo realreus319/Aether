@@ -37,11 +37,11 @@ class ChannelMessageRenderer(
 
     fun streamingSnapshot(
         reasoning: String,
-        toolTimeline: List<String>,
         assistantText: String,
     ): String = buildList {
+        // Tool calls/results are non-streamable and are sent separately by
+        // ChannelManager, matching QwenPaw's event routing.
         thinking(reasoning)?.let(::add)
-        addAll(toolTimeline.filter(String::isNotBlank))
         assistantText.trim().takeIf(String::isNotEmpty)?.let(::add)
     }.joinToString("\n\n")
 

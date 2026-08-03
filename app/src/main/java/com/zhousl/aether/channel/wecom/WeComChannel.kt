@@ -11,6 +11,7 @@ import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
+import com.zhousl.aether.channel.ChannelReplyDelivery
 import com.zhousl.aether.channel.ChannelSendReceipt
 import com.zhousl.aether.channel.channelMediaId
 import com.zhousl.aether.channel.channelMimeTypeForName
@@ -166,7 +167,19 @@ class WeComChannel(
         val requestId = reply.address.replyToken
             .ifBlank { requestIds[reply.address.conversationId].orEmpty() }
         require(requestId.isNotBlank()) { "WeCom inbound frame is no longer available" }
-        if (reply.text.isNotBlank()) sendStream(reply, requestId)
+        if (reply.text.isNotBlank()) {
+            if (
+                reply.delivery == ChannelReplyDelivery.Streaming &&
+                    supportsStreamingReplies
+            ) {
+                sendStream(reply, requestId)
+            } else {
+                // A rich-text event gets its own completed stream segment so
+                // it cannot overwrite an active assistant stream. This is the
+                // WebSocket equivalent of QwenPaw's non-streaming text path.
+                sendOneShotText(reply, requestId)
+            }
+        }
         reply.files.forEach { sendMedia(reply.address, requestId, it) }
         return ChannelSendReceipt(requestId)
     }
@@ -175,6 +188,22 @@ class WeComChannel(
         val streamId = activeStreams.computeIfAbsent(reply.address.conversationId) {
             "aether-${UUID.randomUUID()}"
         }
+        sendStream(reply, requestId, streamId)
+    }
+
+    private fun sendOneShotText(reply: ChannelReply, requestId: String) {
+        sendStream(
+            reply = reply.copy(isFinal = true),
+            requestId = requestId,
+            streamId = "aether-${UUID.randomUUID()}",
+        )
+    }
+
+    private fun sendStream(
+        reply: ChannelReply,
+        requestId: String,
+        streamId: String,
+    ) {
         val frame = JSONObject()
             .put("cmd", "aibot_respond_msg")
             .put("headers", JSONObject().put("req_id", requestId))
@@ -189,7 +218,7 @@ class WeComChannel(
                 ),
             )
         check(socket?.send(frame.toString()) == true) { "WeCom socket is not connected" }
-        if (reply.isFinal) activeStreams.remove(reply.address.conversationId)
+        if (reply.isFinal) activeStreams.remove(reply.address.conversationId, streamId)
     }
 
     private suspend fun sendMedia(

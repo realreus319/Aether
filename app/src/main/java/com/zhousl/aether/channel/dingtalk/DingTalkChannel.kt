@@ -10,6 +10,7 @@ import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
+import com.zhousl.aether.channel.ChannelReplyDelivery
 import com.zhousl.aether.channel.ChannelSendReceipt
 import com.zhousl.aether.channel.JsonMediaType
 import com.zhousl.aether.channel.channelMediaId
@@ -150,7 +151,16 @@ class DingTalkChannel(
 
     override suspend fun send(reply: ChannelReply): ChannelSendReceipt = withContext(Dispatchers.IO) {
         if (reply.text.isNotBlank()) {
-            if (supportsStreamingReplies) sendAiCard(reply) else sendWebhookText(reply.address, reply.text)
+            if (
+                reply.delivery == ChannelReplyDelivery.Streaming &&
+                    supportsStreamingReplies
+            ) {
+                sendAiCard(reply)
+            } else {
+                // Tool calls/results and completed non-streaming replies use
+                // DingTalk's Markdown webhook, just like QwenPaw.
+                sendWebhookText(reply.address, reply.text)
+            }
         }
         reply.files.forEach { sendWebhookFile(reply.address, it) }
         ChannelSendReceipt()

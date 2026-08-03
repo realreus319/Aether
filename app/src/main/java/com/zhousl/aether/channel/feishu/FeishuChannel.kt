@@ -30,6 +30,7 @@ import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
+import com.zhousl.aether.channel.ChannelReplyDelivery
 import com.zhousl.aether.channel.ChannelSendReceipt
 import com.zhousl.aether.channel.channelMediaId
 import com.zhousl.aether.channel.channelMimeTypeForName
@@ -46,6 +47,31 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
+
+/**
+ * Feishu post content is an array of rows, each containing one or more
+ * elements. The `md` element is what makes tool call/result code fences and
+ * bold labels render as Markdown instead of appearing as literal characters
+ * in a plain `text` message.
+ */
+internal fun buildFeishuPostContent(text: String): JSONObject {
+    val markdown = normalizeFeishuMarkdown(text)
+    val row = JSONArray().put(JSONObject().put("tag", "md").put("text", markdown))
+    return JSONObject()
+        .put(
+            "zh_cn",
+            JSONObject().put("content", JSONArray().put(row)),
+        )
+}
+
+internal fun normalizeFeishuMarkdown(text: String): String {
+    if (text.isBlank()) return text
+    // Feishu's post parser is more reliable when a code fence starts on its
+    // own line, matching QwenPaw's normalize_feishu_md helper.
+    return Regex("([^\\n])```").replace(text) { match ->
+        "${match.groupValues[1]}\n```"
+    }
+}
 
 /** Feishu long connection with reactions, CardKit streaming, and native file delivery. */
 class FeishuChannel(
@@ -147,20 +173,27 @@ class FeishuChannel(
     override suspend fun send(reply: ChannelReply): ChannelSendReceipt = withContext(Dispatchers.IO) {
         var receipt = ChannelSendReceipt()
         if (reply.text.isNotBlank()) {
-            receipt = if (supportsStreamingReplies) sendStreamingText(reply) else sendText(reply.address, reply.text)
+            receipt = if (
+                reply.delivery == ChannelReplyDelivery.Streaming &&
+                    supportsStreamingReplies
+            ) {
+                sendStreamingText(reply)
+            } else {
+                sendPostMarkdown(reply.address, reply.text)
+            }
         }
         reply.files.forEach { receipt = sendFile(reply.address, it) }
         receipt
     }
 
-    private fun sendText(address: ChannelAddress, text: String): ChannelSendReceipt =
-        createMessage(address, "text", JSONObject().put("text", text).toString())
+    private fun sendPostMarkdown(address: ChannelAddress, text: String): ChannelSendReceipt =
+        createMessage(address, "post", buildFeishuPostContent(text).toString())
 
     private fun sendStreamingText(reply: ChannelReply): ChannelSendReceipt {
         val key = reply.address.conversationId
         var card = streamingCards[key]
         if (card == null) {
-            if (reply.isFinal) return sendText(reply.address, reply.text)
+            if (reply.isFinal) return sendPostMarkdown(reply.address, reply.text)
             val cardJson = JSONObject()
                 .put("schema", "2.0")
                 .put("config", JSONObject().put("streaming_mode", true))
@@ -171,7 +204,7 @@ class FeishuChannel(
                         JSONArray().put(
                             JSONObject()
                                 .put("tag", "markdown")
-                                .put("content", reply.text)
+                                .put("content", normalizeFeishuMarkdown(reply.text))
                                 .put("element_id", StreamingElementId)
                         ),
                     ),
@@ -207,7 +240,11 @@ class FeishuChannel(
             .contentCardElementReqBody(
                 ContentCardElementReqBody.newBuilder()
                     .uuid(UUID.randomUUID().toString())
-                    .content(JSONObject().put("content", reply.text).toString())
+                    .content(
+                        JSONObject()
+                            .put("content", normalizeFeishuMarkdown(reply.text))
+                            .toString()
+                    )
                     .sequence(card.sequence)
                     .build()
             )

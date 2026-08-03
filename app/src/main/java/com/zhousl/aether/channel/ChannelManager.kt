@@ -200,7 +200,6 @@ class ChannelManager(
                 var reasoningText = ""
                 var failure: String? = null
                 var finalReceipt = ChannelSendReceipt()
-                val toolTimeline = mutableListOf<String>()
                 var latestSnapshot = ""
                 val streaming = channel.supportsStreamingReplies &&
                     initialConfig.display.streamingEnabled
@@ -211,7 +210,14 @@ class ChannelManager(
                             val rendered = latestSnapshot.normalizedChannelReply()
                             if (rendered.isNotBlank() && rendered != lastSent) {
                                 runCatching {
-                                    channel.send(ChannelReply(latest.address, rendered, isFinal = false))
+                                    channel.send(
+                                        ChannelReply(
+                                            address = latest.address,
+                                            text = rendered,
+                                            isFinal = false,
+                                            delivery = ChannelReplyDelivery.Streaming,
+                                        )
+                                    )
                                 }
                                 lastSent = rendered
                             }
@@ -250,7 +256,6 @@ class ChannelManager(
                                 finalText = event.accumulatedText
                                 latestSnapshot = renderer.streamingSnapshot(
                                     reasoningText,
-                                    toolTimeline,
                                     finalText,
                                 )
                             }
@@ -258,34 +263,35 @@ class ChannelManager(
                                 reasoningText = event.accumulatedText
                                 latestSnapshot = renderer.streamingSnapshot(
                                     reasoningText,
-                                    toolTimeline,
                                     finalText,
                                 )
                             }
                             is SessionAgentEvent.ToolCall -> {
                                 renderer.toolCall(event.name, event.argumentsJson)?.let { rendered ->
-                                    toolTimeline += rendered
-                                    latestSnapshot = renderer.streamingSnapshot(
-                                        reasoningText,
-                                        toolTimeline,
-                                        finalText,
+                                    // Tool events are deliberately not streamable in
+                                    // QwenPaw. Send them through the normal rich-text
+                                    // path even while the assistant card is active.
+                                    channel.send(
+                                        ChannelReply(
+                                            address = latest.address,
+                                            text = rendered,
+                                            delivery = ChannelReplyDelivery.RichText,
+                                        )
                                     )
-                                    if (!streaming) {
-                                        channel.send(ChannelReply(latest.address, rendered))
-                                    }
                                 }
                             }
                             is SessionAgentEvent.ToolResult -> {
                                 renderer.toolResult(event.name, event.output, event.isError)?.let { rendered ->
-                                    toolTimeline += rendered
-                                    latestSnapshot = renderer.streamingSnapshot(
-                                        reasoningText,
-                                        toolTimeline,
-                                        finalText,
+                                    // Keep tool results as separate rich-text
+                                    // messages; never overwrite the assistant's
+                                    // streaming card with an internal event.
+                                    channel.send(
+                                        ChannelReply(
+                                            address = latest.address,
+                                            text = rendered,
+                                            delivery = ChannelReplyDelivery.RichText,
+                                        )
                                     )
-                                    if (!streaming) {
-                                        channel.send(ChannelReply(latest.address, rendered))
-                                    }
                                 }
                             }
                             is SessionAgentEvent.FileReady -> {
@@ -315,7 +321,17 @@ class ChannelManager(
                     }
                     val output = failure?.let { "Aether could not complete this turn: $it" }
                         ?: finalText.normalizedChannelReply()
-                    finalReceipt = channel.send(ChannelReply(latest.address, output))
+                    finalReceipt = channel.send(
+                        ChannelReply(
+                            address = latest.address,
+                            text = output,
+                            delivery = if (streaming) {
+                                ChannelReplyDelivery.Streaming
+                            } else {
+                                ChannelReplyDelivery.RichText
+                            },
+                        )
+                    )
                     if (failure == null) {
                         messages.forEach { message ->
                             channel.onCompleted(message, finalReceipt)

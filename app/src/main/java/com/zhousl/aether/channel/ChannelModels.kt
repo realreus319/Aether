@@ -209,11 +209,29 @@ data class ChannelIncomingMessage(
     }
 }
 
+/**
+ * Selects the platform transport for one outgoing reply.
+ *
+ * QwenPaw keeps ordinary text/tool events on the channel's rich-text
+ * transport, while only reasoning/message deltas use a live streaming card
+ * when the channel supports it. Keeping this choice on the reply prevents a
+ * channel from accidentally turning every message into a stream just because
+ * streaming is enabled in its settings.
+ */
+enum class ChannelReplyDelivery {
+    /** A completed message rendered by the channel's normal rich-text path. */
+    RichText,
+
+    /** An incremental assistant/reasoning update (or its final card update). */
+    Streaming,
+}
+
 data class ChannelReply(
     val address: ChannelAddress,
     val text: String = "",
     val files: List<ChannelFile> = emptyList(),
     val isFinal: Boolean = true,
+    val delivery: ChannelReplyDelivery = ChannelReplyDelivery.RichText,
 )
 
 enum class ChannelFileKind { Image, Audio, Video, File }

@@ -45,6 +45,13 @@ class ChannelModelsTest {
     }
 
     @Test
+    fun channelRepliesDefaultToRichTextDelivery() {
+        val reply = ChannelReply(ChannelAddress("chat", "user"), "hello")
+
+        assertEquals(ChannelReplyDelivery.RichText, reply.delivery)
+    }
+
+    @Test
     fun noTextDebounceSettingRoundTrips() {
         val config = ChannelConfig.default(ChannelKind.WeChat).copy(noTextDebounce = false)
 
