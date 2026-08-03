@@ -27,5 +27,40 @@ internal object ChannelAccessController {
     }
 }
 
+/**
+ * QwenPaw-compatible media-only input state. A null result means that the
+ * message was intentionally held for a later text message.
+ */
+internal class ChannelNoTextDebouncer {
+    private val pending = mutableMapOf<String, MutableList<ChannelIncomingMessage>>()
+
+    @Synchronized
+    fun offer(
+        sessionId: String,
+        enabled: Boolean,
+        message: ChannelIncomingMessage,
+    ): List<ChannelIncomingMessage>? {
+        if (
+            enabled &&
+            message.hasAttachments &&
+            !message.hasText &&
+            !message.hasAudioAttachment
+        ) {
+            pending.getOrPut(sessionId) { mutableListOf() }.add(message)
+            return null
+        }
+        val previous = pending.remove(sessionId).orEmpty()
+        return (previous + message).toList()
+    }
+
+    @Synchronized
+    fun clear() {
+        pending.clear()
+    }
+
+    @Synchronized
+    fun pendingCount(sessionId: String): Int = pending[sessionId]?.size ?: 0
+}
+
 internal fun String.normalizedChannelReply(maxChars: Int = 12_000): String =
     trim().ifBlank { "Aether completed the turn without a text response." }.take(maxChars)

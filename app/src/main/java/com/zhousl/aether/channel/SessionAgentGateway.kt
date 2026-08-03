@@ -3,11 +3,22 @@ package com.zhousl.aether.channel
 import com.zhousl.aether.data.SessionTurnOutcome
 import kotlinx.coroutines.flow.Flow
 
+data class SessionAgentAttachment(
+    val id: String,
+    val name: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val kind: ChannelIncomingAttachmentKind,
+    val workspacePath: String,
+    val inlineBase64: String = "",
+)
+
 data class SessionAgentRequest(
     val sessionId: String,
     val text: String,
     val sessionTitle: String,
     val source: String,
+    val attachments: List<SessionAgentAttachment> = emptyList(),
 )
 
 sealed interface SessionAgentEvent {
@@ -35,4 +46,11 @@ sealed interface SessionAgentEvent {
 
 fun interface SessionAgentProcessor {
     fun process(request: SessionAgentRequest): Flow<SessionAgentEvent>
+}
+
+fun interface ChannelAttachmentImporter {
+    suspend fun importAttachment(
+        sessionId: String,
+        attachment: ChannelIncomingAttachment,
+    ): Result<ChannelIncomingAttachment>
 }

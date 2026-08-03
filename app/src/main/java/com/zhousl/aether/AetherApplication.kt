@@ -246,6 +246,7 @@ class AetherAppRuntime(
         scope = appScope,
         configRepository = channelConfigRepository,
         processor = sessionExecutionManager,
+        attachmentImporter = sessionExecutionManager,
         onKeepAliveRequired = { required ->
             if (required) runCatching { AetherForegroundService.ensureRunning(application) }
         },

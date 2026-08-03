@@ -17,7 +17,7 @@ class ChannelRegistry(
         .build(),
 ) {
     fun create(config: ChannelConfig): AetherChannel = when (config.kind) {
-        ChannelKind.Feishu -> FeishuChannel(config, scope)
+        ChannelKind.Feishu -> FeishuChannel(config, scope, http)
         ChannelKind.DingTalk -> DingTalkChannel(config, scope, http)
         ChannelKind.WeChat -> WeChatChannel(config, scope, http)
         ChannelKind.WeCom -> WeComChannel(config, scope, http)

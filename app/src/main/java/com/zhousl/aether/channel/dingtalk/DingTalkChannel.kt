@@ -6,11 +6,15 @@ import com.zhousl.aether.channel.ChannelConfig
 import com.zhousl.aether.channel.ChannelConnectionState
 import com.zhousl.aether.channel.ChannelFile
 import com.zhousl.aether.channel.ChannelFileKind
+import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
 import com.zhousl.aether.channel.ChannelSendReceipt
 import com.zhousl.aether.channel.JsonMediaType
+import com.zhousl.aether.channel.channelMediaId
+import com.zhousl.aether.channel.channelMimeTypeForName
+import com.zhousl.aether.channel.getBytes
 import com.zhousl.aether.channel.postJson
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -82,25 +86,32 @@ class DingTalkChannel(
                         ?: frame.optJSONObject("data")
                         ?: return
                     val messageId = payload.optString("msgId").ifBlank { headers.optString("messageId") }
-                    val textValue = payload.optJSONObject("text")?.optString("content").orEmpty().trim()
-                    if (textValue.isNotBlank()) scope.launch {
-                        emitIncoming(
-                            ChannelIncomingMessage(
-                                kind,
-                                messageId.ifBlank { UUID.randomUUID().toString() },
-                                ChannelAddress(
-                                    conversationId = payload.optString("conversationId")
-                                        .ifBlank { payload.optString("senderId") },
-                                    userId = payload.optString("senderStaffId")
-                                        .ifBlank { payload.optString("senderId") },
-                                    replyToken = payload.optString("sessionWebhook"),
-                                    attributes = mapOf(
-                                        "conversationType" to payload.optString("conversationType", "1"),
+                    scope.launch(Dispatchers.IO) {
+                        val parsed = try {
+                            parseIncomingPayload(payload)
+                        } catch (_: Throwable) {
+                            return@launch
+                        }
+                        if (parsed.first.isNotBlank() || parsed.second.isNotEmpty()) {
+                            emitIncoming(
+                                ChannelIncomingMessage(
+                                    kind,
+                                    messageId.ifBlank { UUID.randomUUID().toString() },
+                                    ChannelAddress(
+                                        conversationId = payload.optString("conversationId")
+                                            .ifBlank { payload.optString("senderId") },
+                                        userId = payload.optString("senderStaffId")
+                                            .ifBlank { payload.optString("senderId") },
+                                        replyToken = payload.optString("sessionWebhook"),
+                                        attributes = mapOf(
+                                            "conversationType" to payload.optString("conversationType", "1"),
+                                        ),
                                     ),
-                                ),
-                                textValue,
+                                    parsed.first,
+                                    parsed.second,
+                                )
                             )
-                        )
+                        }
                     }
                     webSocket.send(JSONObject().put("code", 200).put("headers", headers).put("message", "OK").toString())
                 }
@@ -339,5 +350,118 @@ class DingTalkChannel(
             if (!it.isSuccessful) error("DingTalk OpenAPI failed: HTTP ${it.code}")
             if (text.isBlank()) JSONObject() else JSONObject(text)
         }
+    }
+
+    private data class MediaRef(
+        val code: String,
+        val name: String,
+        val kind: String,
+    )
+
+    private suspend fun parseIncomingPayload(
+        payload: JSONObject,
+    ): Pair<String, List<ChannelIncomingAttachment>> {
+        val textParts = mutableListOf<String>()
+        val refs = mutableListOf<MediaRef>()
+        payload.optJSONObject("text")?.optString("content")
+            ?.trim()?.takeIf(String::isNotBlank)?.let(textParts::add)
+        val content = payload.optJSONObject("content") ?: JSONObject()
+        content.optString("text").trim().takeIf(String::isNotBlank)?.let(textParts::add)
+        sequenceOf(payload.optString("recognition"), content.optString("recognition"))
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .forEach(textParts::add)
+        val richText = content.optJSONArray("richText") ?: content.optJSONArray("rich_text")
+        if (richText != null) {
+            for (index in 0 until richText.length()) {
+                val item = richText.optJSONObject(index) ?: continue
+                item.optString("text").ifBlank { item.optString("content") }
+                    .trim().takeIf(String::isNotBlank)?.let(textParts::add)
+                item.optString("recognition").trim()
+                    .takeIf(String::isNotBlank)?.let(textParts::add)
+                addDingTalkMediaRef(item, refs)
+            }
+        }
+        addDingTalkMediaRef(content, refs, payload.optString("msgtype"))
+        addDingTalkMediaRef(payload, refs)
+
+        val robotCode = payload.optString("robotCode")
+            .ifBlank { payload.optString("robot_code") }
+            .ifBlank { config.robotCode }
+            .ifBlank { config.appId }
+        val attachments = mutableListOf<ChannelIncomingAttachment>()
+        for (ref in refs.distinctBy { it.code }) {
+            try {
+                val bytes = downloadDingTalkMedia(ref.code, robotCode)
+                attachments += ChannelIncomingAttachment(
+                    id = channelMediaId("dingtalk", ref.code),
+                    name = ref.name,
+                    mimeType = channelMimeTypeForName(ref.name, fallback = when (ref.kind) {
+                        "image" -> "image/jpeg"
+                        "video" -> "video/mp4"
+                        else -> "application/octet-stream"
+                    }),
+                    bytes = bytes,
+                )
+            } catch (_: Throwable) {
+                // Keep text and other valid attachments when one media resource fails.
+            }
+        }
+        return textParts.distinct().joinToString("\n") to attachments
+    }
+
+    private fun addDingTalkMediaRef(
+        value: JSONObject,
+        refs: MutableList<MediaRef>,
+        fallbackType: String = "",
+    ) {
+        val code = sequenceOf("downloadCode", "download_code", "pictureDownloadCode", "picture_download_code")
+            .map { value.optString(it) }
+            .firstOrNull(String::isNotBlank)
+            ?: return
+        val rawType = sequenceOf("type", "msgType", "msgtype", "mediaType")
+            .map { value.optString(it) }
+            .firstOrNull(String::isNotBlank)
+            .orEmpty()
+            .lowercase()
+            .ifBlank { fallbackType.lowercase() }
+        val kind = when (rawType) {
+            "picture", "image", "photo" -> "image"
+            "video" -> "video"
+            "voice", "audio" -> "audio"
+            else -> "file"
+        }
+        val name = sequenceOf("fileName", "file_name", "filename", "name", "title")
+            .map { value.optString(it) }
+            .firstOrNull(String::isNotBlank)
+            ?: when (kind) {
+                "image" -> "image.jpg"
+                "video" -> "video.mp4"
+                "audio" -> "audio.amr"
+                else -> "file.bin"
+            }
+        refs += MediaRef(code, name, kind)
+    }
+
+    private suspend fun downloadDingTalkMedia(
+        downloadCode: String,
+        robotCode: String,
+    ): ByteArray {
+        require(downloadCode.isNotBlank() && robotCode.isNotBlank()) {
+            "DingTalk media download code or robot code is missing"
+        }
+        val accessToken = withContext(Dispatchers.IO) { token() }
+        val response = http.postJson(
+            "${config.baseUrl.trimEnd('/')}/v1.0/robot/messageFiles/download",
+            JSONObject()
+                .put("downloadCode", downloadCode)
+                .put("robotCode", robotCode),
+            headers = mapOf("x-acs-dingtalk-access-token" to accessToken),
+        )
+        val url = sequenceOf("downloadUrl", "download_url", "url")
+            .map { response.optString(it) }
+            .firstOrNull(String::isNotBlank)
+            ?: error("DingTalk media API returned no download URL")
+        http.getBytes(url)
     }
 }

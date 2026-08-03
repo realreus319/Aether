@@ -54,6 +54,13 @@ class WorkspaceFileBridge(
         mode: AgentWorkspaceMode = AgentWorkspaceMode.Shared,
     ): String = "${workspaceDirectory(sessionId, mode)}/uploads"
 
+    fun workspaceUploadPath(
+        sessionId: String,
+        attachmentId: String,
+        displayName: String,
+        mode: AgentWorkspaceMode = AgentWorkspaceMode.Shared,
+    ): String = "${workspaceUploadsDirectory(sessionId, mode)}/${buildWorkspaceFileName(attachmentId, displayName)}"
+
     suspend fun importAttachmentToWorkspace(
         sourceUri: Uri,
         sessionId: String,

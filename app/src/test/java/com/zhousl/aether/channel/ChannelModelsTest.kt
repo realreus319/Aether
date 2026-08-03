@@ -41,6 +41,14 @@ class ChannelModelsTest {
         )
 
         assertEquals(ChannelDisplayOptions(), decoded?.display)
+        assertTrue(decoded?.noTextDebounce == true)
+    }
+
+    @Test
+    fun noTextDebounceSettingRoundTrips() {
+        val config = ChannelConfig.default(ChannelKind.WeChat).copy(noTextDebounce = false)
+
+        assertEquals(false, ChannelConfig.fromJson(config.toJson())?.noTextDebounce)
     }
 
     @Test

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Owns platform lifecycles and routes every external conversation through the same
@@ -22,13 +23,19 @@ class ChannelManager(
     private val scope: CoroutineScope,
     private val configRepository: ChannelConfigRepository,
     private val processor: SessionAgentProcessor,
+    private val attachmentImporter: ChannelAttachmentImporter = ChannelAttachmentImporter { _, _attachment ->
+        Result.failure(IllegalStateException("Inbound channel attachments are not configured"))
+    },
     private val registry: ChannelRegistry = ChannelRegistry(scope),
     private val onKeepAliveRequired: (Boolean) -> Unit = {},
 ) {
-    private data class Actor(val queue: Channel<ChannelIncomingMessage>, val job: Job)
+    private data class DispatchEnvelope(val messages: List<ChannelIncomingMessage>)
+    private data class Actor(val queue: Channel<DispatchEnvelope>, val job: Job)
 
     private val lock = Any()
     private val deduplicator = ChannelMessageDeduplicator()
+    private val noTextDebouncer = ChannelNoTextDebouncer()
+    private val routeLocks = ConcurrentHashMap<String, Mutex>()
     private val channels = mutableMapOf<ChannelKind, AetherChannel>()
     private val channelJobs = mutableListOf<Job>()
     private val sessionActors = ConcurrentHashMap<String, Actor>()
@@ -56,6 +63,8 @@ class ChannelManager(
         oldChannels.forEach { runCatching { it.stop() } }
         sessionActors.values.forEach { actor -> actor.queue.close(); actor.job.cancel() }
         sessionActors.clear()
+        noTextDebouncer.clear()
+        routeLocks.clear()
         onKeepAliveRequired(false)
     }
 
@@ -102,31 +111,89 @@ class ChannelManager(
     private fun route(config: ChannelConfig, message: ChannelIncomingMessage) {
         if (!deduplicator.accept(message.channel, message.messageId)) return
         if (!ChannelAccessController.isAllowed(config.accessPolicy, message.address.userId)) return
-        synchronized(lock) { channels[message.channel] }?.let { channel ->
-            scope.launch { runCatching { channel.onProcessing(message) } }
+        val routeLock = routeLocks.computeIfAbsent(message.sessionId) { Mutex() }
+        scope.launch {
+            routeLock.lock()
+            try {
+                val prepared = prepareIncomingMessage(message) ?: return@launch
+                val dispatch = noTextDebouncer.offer(message.sessionId, config.noTextDebounce, prepared)
+                    ?: return@launch
+                if (dispatch.isEmpty()) return@launch
+                val actor = sessionActors.computeIfAbsent(message.sessionId) { sessionId ->
+                    val queue = Channel<DispatchEnvelope>(Channel.UNLIMITED)
+                    val job = scope.launch { consumeSession(sessionId, config, queue) }
+                    Actor(queue, job)
+                }
+                actor.queue.trySend(DispatchEnvelope(dispatch))
+            } finally {
+                routeLock.unlock()
+            }
         }
-        val actor = sessionActors.computeIfAbsent(message.sessionId) { sessionId ->
-            val queue = Channel<ChannelIncomingMessage>(Channel.UNLIMITED)
-            val job = scope.launch { consumeSession(sessionId, config, queue) }
-            Actor(queue, job)
+    }
+
+    private suspend fun prepareIncomingMessage(
+        message: ChannelIncomingMessage,
+    ): ChannelIncomingMessage? {
+        if (message.attachments.isEmpty()) return message
+        val prepared = mutableListOf<ChannelIncomingAttachment>()
+        for (attachment in message.attachments) {
+            if (attachment.isPrepared) {
+                prepared += attachment
+            } else {
+                val imported = try {
+                    attachmentImporter.importAttachment(message.sessionId, attachment)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    Result.failure(error)
+                }
+                val preparedAttachment = imported.getOrNull()
+                if (preparedAttachment == null) {
+                    val error = imported.exceptionOrNull()
+                    val channel = synchronized(lock) { channels[message.channel] }
+                    try {
+                        channel?.send(
+                            ChannelReply(
+                                address = message.address,
+                                text = "Aether 无法读取这个附件：${error?.message ?: "导入失败"}",
+                            )
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        // The platform can disconnect while an attachment is being imported.
+                    }
+                    continue
+                }
+                prepared += preparedAttachment
+            }
         }
-        actor.queue.trySend(message)
+        return message.copy(attachments = prepared).takeIf { it.hasText || it.hasAttachments }
     }
 
     private suspend fun consumeSession(
         sessionId: String,
         initialConfig: ChannelConfig,
-        queue: Channel<ChannelIncomingMessage>,
+        queue: Channel<DispatchEnvelope>,
     ) {
         try {
-            for (first in queue) {
-                val messages = mutableListOf(first)
+            for (firstEnvelope in queue) {
+                val messages = firstEnvelope.messages.toMutableList()
                 if (initialConfig.mergeWindowMillis > 0) {
                     delay(initialConfig.mergeWindowMillis)
-                    while (true) messages += queue.tryReceive().getOrNull() ?: break
+                    while (true) {
+                        val next = queue.tryReceive().getOrNull() ?: break
+                        messages += next.messages
+                    }
                 }
                 val latest = messages.last()
-                val input = messages.joinToString("\n") { it.text.trim() }
+                val input = messages
+                    .map { it.text.trim() }
+                    .filter(String::isNotBlank)
+                    .joinToString("\n")
+                val attachments = messages
+                    .flatMap(ChannelIncomingMessage::attachments)
+                    .distinctBy(ChannelIncomingAttachment::id)
                 val channel = synchronized(lock) { channels[latest.channel] } ?: continue
                 val renderer = ChannelMessageRenderer(initialConfig.display)
                 var finalText = ""
@@ -155,12 +222,26 @@ class ChannelManager(
                     null
                 }
                 try {
+                    messages.forEach { message ->
+                        runCatching { channel.onProcessing(message) }
+                    }
                     processor.process(
                         SessionAgentRequest(
                             sessionId = sessionId,
                             text = input,
                             sessionTitle = "${latest.channel.displayName} · ${latest.address.conversationId.take(18)}",
                             source = latest.channel.storageValue,
+                            attachments = attachments.map { attachment ->
+                                SessionAgentAttachment(
+                                    id = attachment.id,
+                                    name = attachment.name,
+                                    mimeType = attachment.mimeType,
+                                    sizeBytes = attachment.sizeBytes,
+                                    kind = attachment.kind,
+                                    workspacePath = attachment.workspacePath,
+                                    inlineBase64 = attachment.inlineBase64,
+                                )
+                            },
                         )
                     ).collect { event ->
                         when (event) {

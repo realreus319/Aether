@@ -67,6 +67,67 @@ class RuntimeWorkspaceFileBridge(
         )
     }
 
+    suspend fun importBytesToWorkspace(
+        settings: AppSettings,
+        sessionId: String,
+        attachmentId: String,
+        displayName: String,
+        bytes: ByteArray,
+        mode: AgentWorkspaceMode = AgentWorkspaceMode.Shared,
+    ): Result<ImportedWorkspaceFile> {
+        val preferredRuntimeId = runtimeRouter.runtimeFor(settings, null)?.id
+            ?: settings.defaultRuntimeId
+            ?: LocalRuntimeId.Alpine
+        val runtimeOrder = listOf(preferredRuntimeId, preferredRuntimeId.alternate()).distinct()
+        val failures = mutableListOf<String>()
+
+        runtimeOrder.forEach { runtimeId ->
+            val destinationPath = when (runtimeId) {
+                LocalRuntimeId.Alpine ->
+                    "${alpineRuntime.workspaceRoot}/uploads/${buildRuntimeWorkspaceFileName(attachmentId, displayName)}"
+                LocalRuntimeId.Termux -> termuxFileBridge.workspaceUploadPath(
+                    sessionId = sessionId,
+                    attachmentId = attachmentId,
+                    displayName = displayName,
+                    mode = mode,
+                )
+            }
+            val result = when (runtimeId) {
+                LocalRuntimeId.Alpine -> writeAlpineWorkspaceBytes(
+                    path = destinationPath,
+                    workingDirectory = alpineRuntime.workspaceRoot,
+                    bytes = bytes,
+                )
+                LocalRuntimeId.Termux -> termuxFileBridge.writeWorkspaceBytes(
+                    absolutePath = destinationPath,
+                    bytes = bytes,
+                )
+            }
+            result.onSuccess {
+                return Result.success(
+                    ImportedWorkspaceFile(
+                        absolutePath = destinationPath,
+                        bytesCopied = bytes.size.toLong(),
+                        inlineBytes = if (bytes.size <= RuntimeWorkspaceInlineBytesLimit) {
+                            bytes.copyOf()
+                        } else {
+                            ByteArray(0)
+                        },
+                    )
+                )
+            }
+            failures += "${runtimeId.storageValue}: ${result.exceptionOrNull()?.message.orEmpty()}"
+        }
+
+        return Result.failure(
+            IllegalStateException(
+                failures.filter(String::isNotBlank)
+                    .joinToString("\n")
+                    .ifBlank { "Couldn't copy the channel attachment into the workspace." }
+            )
+        )
+    }
+
     suspend fun readWorkspaceFile(
         settings: AppSettings,
         workspaceDirectory: String,

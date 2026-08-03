@@ -7,11 +7,16 @@ import com.zhousl.aether.channel.ChannelConfig
 import com.zhousl.aether.channel.ChannelConnectionState
 import com.zhousl.aether.channel.ChannelFile
 import com.zhousl.aether.channel.ChannelFileKind
+import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
 import com.zhousl.aether.channel.ChannelSendReceipt
 import com.zhousl.aether.channel.awaitResponse
+import com.zhousl.aether.channel.channelMediaId
+import com.zhousl.aether.channel.channelMimeTypeForName
+import com.zhousl.aether.channel.decryptChannelAesEcb
+import com.zhousl.aether.channel.getBytes
 import com.zhousl.aether.channel.postJson
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -69,26 +74,27 @@ class WeChatChannel(
                     if (ret != 0 && ret != -1) error("WeChat getupdates ret=$ret")
                     cursor = response.optString("get_updates_buf", cursor)
                     val messages = response.optJSONArray("msgs")
-                    if (messages != null) repeat(messages.length()) { index ->
-                        val message = messages.optJSONObject(index) ?: return@repeat
+                    if (messages != null) for (index in 0 until messages.length()) {
+                        val message = messages.optJSONObject(index) ?: continue
                         val from = message.optString("from_user_id")
                         val contextToken = message.optString("context_token")
                         val items = message.optJSONArray("item_list")
-                        val text = buildList {
-                            if (items != null) repeat(items.length()) { itemIndex ->
-                                items.optJSONObject(itemIndex)?.optJSONObject("text_item")
-                                    ?.optString("text")?.trim()?.takeIf(String::isNotBlank)?.let(::add)
-                            }
-                        }.joinToString("\n")
-                        if (from.isNotBlank() && text.isNotBlank()) {
+                        val messageId = message.optString("msg_id").ifBlank {
+                            contextToken.ifBlank { UUID.randomUUID().toString() }
+                        }
+                        val parsed = try {
+                            parseIncomingItems(items, messageId)
+                        } catch (_: Throwable) {
+                            "" to emptyList()
+                        }
+                        if (from.isNotBlank() && (parsed.first.isNotBlank() || parsed.second.isNotEmpty())) {
                             emitIncoming(
                                 ChannelIncomingMessage(
                                     kind,
-                                    contextToken.ifBlank {
-                                        message.optString("msg_id").ifBlank { UUID.randomUUID().toString() }
-                                    },
+                                    messageId,
                                     ChannelAddress(from, from, contextToken),
-                                    text,
+                                    parsed.first,
+                                    parsed.second,
                                 )
                             )
                         }
@@ -282,6 +288,112 @@ class WeChatChannel(
     }
 
     private fun baseInfo(): JSONObject = JSONObject().put("channel_version", ChannelVersion)
+
+    private suspend fun parseIncomingItems(
+        items: JSONArray?,
+        messageId: String,
+    ): Pair<String, List<ChannelIncomingAttachment>> {
+        val textParts = mutableListOf<String>()
+        val attachments = mutableListOf<ChannelIncomingAttachment>()
+        if (items == null) return "" to emptyList()
+        for (index in 0 until items.length()) {
+            val item = items.optJSONObject(index) ?: continue
+            when (item.optInt("type")) {
+                1 -> item.optJSONObject("text_item")?.optString("text")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() && !looksLikeFilename(it) }
+                    ?.let(textParts::add)
+                2 -> {
+                    val image = item.optJSONObject("image_item") ?: continue
+                    val media = image.optJSONObject("media") ?: JSONObject()
+                    addWeChatAttachment(
+                        media = media,
+                        name = "image.jpg",
+                        mimeType = "image/jpeg",
+                        messageId = messageId,
+                        attachments = attachments,
+                        keyHint = image.optString("aeskey"),
+                    )
+                }
+                3 -> {
+                    val voice = item.optJSONObject("voice_item") ?: continue
+                    val asr = voice.optJSONObject("text_item")?.optString("text")
+                        .orEmpty().trim()
+                    if (asr.isNotBlank()) textParts += asr
+                    else {
+                        addWeChatAttachment(
+                            media = voice.optJSONObject("media") ?: JSONObject(),
+                            name = "audio.amr",
+                            mimeType = "audio/amr",
+                            messageId = messageId,
+                            attachments = attachments,
+                        )
+                    }
+                }
+                4 -> {
+                    val file = item.optJSONObject("file_item") ?: continue
+                    val name = file.optString("file_name").ifBlank { "file.bin" }
+                    addWeChatAttachment(
+                        media = file.optJSONObject("media") ?: JSONObject(),
+                        name = name,
+                        mimeType = channelMimeTypeForName(name),
+                        messageId = messageId,
+                        attachments = attachments,
+                    )
+                }
+                5 -> {
+                    val video = item.optJSONObject("video_item") ?: continue
+                    addWeChatAttachment(
+                        media = video.optJSONObject("media") ?: JSONObject(),
+                        name = "video.mp4",
+                        mimeType = "video/mp4",
+                        messageId = messageId,
+                        attachments = attachments,
+                    )
+                }
+            }
+        }
+        return textParts.joinToString("\n") to attachments
+    }
+
+    private suspend fun addWeChatAttachment(
+        media: JSONObject,
+        name: String,
+        mimeType: String,
+        messageId: String,
+        attachments: MutableList<ChannelIncomingAttachment>,
+        keyHint: String = "",
+    ) {
+        val query = media.optString("encrypt_query_param")
+        if (query.isBlank()) return
+        val bytes = downloadWeChatMedia(query, keyHint.ifBlank { media.optString("aes_key") })
+        attachments += ChannelIncomingAttachment(
+            id = channelMediaId("wechat", "$messageId:$query"),
+            name = name,
+            mimeType = mimeType,
+            bytes = bytes,
+        )
+    }
+
+    private suspend fun downloadWeChatMedia(
+        encryptedQueryParam: String,
+        aesKey: String,
+    ): ByteArray {
+        val encoded = URLEncoder.encode(encryptedQueryParam, "UTF-8")
+        val encrypted = http.getBytes(
+            "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=$encoded",
+        )
+        return if (aesKey.isBlank()) encrypted else decryptChannelAesEcb(encrypted, aesKey)
+    }
+
+    private fun looksLikeFilename(value: String): Boolean {
+        val lower = value.lowercase()
+        return listOf(
+            ".txt", ".doc", ".docx", ".pdf", ".jpg", ".jpeg", ".png", ".gif",
+            ".mp4", ".avi", ".mov", ".mp3", ".wav", ".zip", ".rar", ".xlsx",
+            ".xls", ".ppt", ".pptx",
+        ).any(lower::endsWith)
+    }
 
     private fun headers(): Map<String, String> {
         val uin = Base64.encodeToString(

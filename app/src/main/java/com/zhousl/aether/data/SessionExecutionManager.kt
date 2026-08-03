@@ -10,6 +10,9 @@ import com.zhousl.aether.channel.SessionAgentProcessor
 import com.zhousl.aether.channel.SessionAgentRequest
 import com.zhousl.aether.channel.ChannelFile
 import com.zhousl.aether.channel.ChannelMessageRenderer
+import com.zhousl.aether.channel.ChannelAttachmentImporter
+import com.zhousl.aether.channel.ChannelIncomingAttachment
+import com.zhousl.aether.channel.ChannelIncomingAttachmentKind
 import com.zhousl.aether.runtime.RuntimeRouter
 import com.zhousl.aether.runtime.RuntimeShellTool
 import com.zhousl.aether.data.pi.PiAgentRunner
@@ -17,6 +20,7 @@ import com.zhousl.aether.data.pi.PiCompletionClient
 import com.zhousl.aether.data.pi.PiKernelBridge
 import com.zhousl.aether.termux.TermuxBashTool
 import com.zhousl.aether.ui.AttachmentKind
+import com.zhousl.aether.ui.AttachmentWorkspaceState
 import com.zhousl.aether.ui.AssistantResponseBlock
 import com.zhousl.aether.ui.ChatAttachment
 import com.zhousl.aether.ui.ChatMessage
@@ -29,6 +33,7 @@ import com.zhousl.aether.ui.ReasoningSummaryChunk
 import com.zhousl.aether.ui.ReasoningTrace
 import com.zhousl.aether.ui.syncActiveBranches
 import java.util.concurrent.ConcurrentHashMap
+import java.util.Base64
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -154,7 +159,7 @@ class SessionExecutionManager(
     private val piCompletionClient: PiCompletionClient? = null,
     private val piKernelBridge: PiKernelBridge,
     private val piAgentRunner: PiAgentRunner,
-) : SessionAgentProcessor {
+) : SessionAgentProcessor, ChannelAttachmentImporter {
     private val currentSettings = MutableStateFlow(AppSettings())
     private val currentProviderConfigs = MutableStateFlow<List<LlmProviderConfig>>(emptyList())
     private val currentExtensionsState = MutableStateFlow(AgentExtensionsState())
@@ -191,6 +196,47 @@ class SessionExecutionManager(
 
     fun isSessionRunning(sessionId: String): Boolean =
         _executionStates.value[sessionId]?.isRunning == true
+
+    override suspend fun importAttachment(
+        sessionId: String,
+        attachment: ChannelIncomingAttachment,
+    ): Result<ChannelIncomingAttachment> {
+        return try {
+            require(attachment.sizeBytes <= ChannelFileMaxBytes) {
+                "Inbound attachment exceeds the ${ChannelFileMaxBytes / (1024 * 1024)} MB limit"
+            }
+            val settings = settingsRepository.settings.first()
+            val imported = runtimeWorkspaceFileBridge.importBytesToWorkspace(
+                settings = settings,
+                sessionId = sessionId,
+                attachmentId = attachment.id,
+                displayName = attachment.name,
+                bytes = attachment.bytes,
+                mode = settings.agentWorkspaceMode,
+            ).getOrThrow()
+            val inlineBase64 = if (
+                attachment.kind == ChannelIncomingAttachmentKind.Image &&
+                imported.inlineBytes.isNotEmpty() &&
+                imported.inlineBytes.size <= 5 * 1024 * 1024
+            ) {
+                Base64.getEncoder().encodeToString(imported.inlineBytes)
+            } else {
+                ""
+            }
+            Result.success(
+                attachment.copy(
+                    bytes = ByteArray(0),
+                    workspacePath = imported.absolutePath,
+                    inlineBase64 = inlineBase64,
+                    declaredSizeBytes = attachment.sizeBytes,
+                )
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+    }
 
     override fun process(request: SessionAgentRequest): Flow<SessionAgentEvent> = channelFlow {
         send(SessionAgentEvent.Started)
@@ -239,7 +285,9 @@ class SessionExecutionManager(
     }
 
     private suspend fun startExternalTurn(request: SessionAgentRequest) {
-        require(request.text.isNotBlank()) { "Channel message is empty" }
+        require(request.text.isNotBlank() || request.attachments.isNotEmpty()) {
+            "Channel message is empty"
+        }
         val settings = settingsRepository.settings.first()
         val providerConfigs = settingsRepository.providerConfigs.first()
         val now = System.currentTimeMillis()
@@ -248,6 +296,23 @@ class SessionExecutionManager(
             author = MessageAuthor.User,
             text = request.text,
             createdAtMillis = now,
+            attachments = request.attachments.map { attachment ->
+                ChatAttachment(
+                    id = attachment.id,
+                    uri = "channel://${request.source}/${attachment.id}",
+                    name = attachment.name,
+                    mimeType = attachment.mimeType,
+                    sizeBytes = attachment.sizeBytes,
+                    kind = if (attachment.kind == ChannelIncomingAttachmentKind.Image) {
+                        AttachmentKind.Image
+                    } else {
+                        AttachmentKind.File
+                    },
+                    workspacePath = attachment.workspacePath,
+                    workspaceState = AttachmentWorkspaceState.Ready,
+                    inlineBase64 = attachment.inlineBase64,
+                )
+            },
         )
         var selectedModelKey = ""
         var requestMessages: List<ChatMessage> = emptyList()

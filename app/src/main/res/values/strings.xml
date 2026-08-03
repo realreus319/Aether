@@ -1011,6 +1011,8 @@
     <string name="settings_channel_access_allow_list">Allow list</string>
     <string name="settings_channel_access_disabled">Blocked</string>
     <string name="settings_channel_allowed_users">Allowed user IDs (one per line)</string>
+    <string name="settings_channel_no_text_debounce">Buffer media-only messages</string>
+    <string name="settings_channel_no_text_debounce_subtitle">Keep image, video, and file messages until a following text message arrives. Disabled processes every message immediately.</string>
     <string name="settings_channel_save">Save channel</string>
     <string name="settings_channel_status_disabled">Disabled</string>
     <string name="settings_channel_status_starting">Connecting…</string>

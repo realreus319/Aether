@@ -69,6 +69,12 @@ data class ChannelConfig(
     val baseUrl: String = "",
     val accessPolicy: ChannelAccessPolicy = ChannelAccessPolicy(),
     val mergeWindowMillis: Long = 600,
+    /**
+     * Keep media-only messages until a following text message arrives. This is
+     * the QwenPaw-compatible default and is intentionally enabled for migrated
+     * configurations as well.
+     */
+    val noTextDebounce: Boolean = true,
     val display: ChannelDisplayOptions = ChannelDisplayOptions(),
     /** DingTalk robot code is distinct from the Stream client ID for some applications. */
     val robotCode: String = "",
@@ -93,6 +99,7 @@ data class ChannelConfig(
         .put("accessMode", accessPolicy.mode.name)
         .put("allowedUserIds", JSONArray(accessPolicy.allowedUserIds.toList()))
         .put("mergeWindowMillis", mergeWindowMillis)
+        .put("noTextDebounce", noTextDebounce)
         .put("display", display.toJson())
         .put("robotCode", robotCode)
         .put("cardTemplateId", cardTemplateId)
@@ -128,6 +135,7 @@ data class ChannelConfig(
                     },
                 ),
                 mergeWindowMillis = json.optLong("mergeWindowMillis", 600).coerceIn(0, 5_000),
+                noTextDebounce = json.optBoolean("noTextDebounce", true),
                 display = ChannelDisplayOptions.fromJson(json.optJSONObject("display")),
                 robotCode = json.optString("robotCode"),
                 cardTemplateId = json.optString("cardTemplateId"),
@@ -153,13 +161,47 @@ data class ChannelAddress(
     val attributes: Map<String, String> = emptyMap(),
 )
 
+enum class ChannelIncomingAttachmentKind { Image, Audio, Video, File }
+
+private fun channelIncomingKindForMime(mimeType: String): ChannelIncomingAttachmentKind = when {
+    mimeType.startsWith("image/", ignoreCase = true) -> ChannelIncomingAttachmentKind.Image
+    mimeType.startsWith("audio/", ignoreCase = true) -> ChannelIncomingAttachmentKind.Audio
+    mimeType.startsWith("video/", ignoreCase = true) -> ChannelIncomingAttachmentKind.Video
+    else -> ChannelIncomingAttachmentKind.File
+}
+
+/**
+ * Media received from a platform. Adapters download the short-lived platform
+ * resource before emitting this value; ChannelManager imports the bytes into
+ * the session workspace before they are passed to the agent.
+ */
+data class ChannelIncomingAttachment(
+    val id: String,
+    val name: String,
+    val mimeType: String,
+    val bytes: ByteArray,
+    val kind: ChannelIncomingAttachmentKind = channelIncomingKindForMime(mimeType),
+    val workspacePath: String = "",
+    val inlineBase64: String = "",
+    val declaredSizeBytes: Long? = null,
+) {
+    val sizeBytes: Long get() = declaredSizeBytes ?: bytes.size.toLong()
+    val isPrepared: Boolean get() = workspacePath.isNotBlank()
+}
+
 data class ChannelIncomingMessage(
     val channel: ChannelKind,
     val messageId: String,
     val address: ChannelAddress,
-    val text: String,
+    val text: String = "",
+    val attachments: List<ChannelIncomingAttachment> = emptyList(),
     val receivedAtMillis: Long = System.currentTimeMillis(),
 ) {
+    val hasText: Boolean get() = text.trim().isNotEmpty()
+    val hasAttachments: Boolean get() = attachments.isNotEmpty()
+    val hasAudioAttachment: Boolean
+        get() = attachments.any { it.kind == ChannelIncomingAttachmentKind.Audio }
+
     val sessionId: String by lazy {
         val input = "${channel.storageValue}:${address.conversationId}"
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())

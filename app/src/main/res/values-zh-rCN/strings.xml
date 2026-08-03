@@ -1009,6 +1009,8 @@
     <string name="settings_channel_access_allow_list">白名单</string>
     <string name="settings_channel_access_disabled">禁止</string>
     <string name="settings_channel_allowed_users">允许的用户 ID（每行一个）</string>
+    <string name="settings_channel_no_text_debounce">无文本消息防抖</string>
+    <string name="settings_channel_no_text_debounce_subtitle">开启后，仅含图片、视频或文件的消息会暂存，等待后续文本合并处理；关闭后所有消息立即处理。</string>
     <string name="settings_channel_save">保存通道</string>
     <string name="settings_channel_status_disabled">未启用</string>
     <string name="settings_channel_status_starting">正在连接…</string>

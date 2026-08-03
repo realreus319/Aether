@@ -7,10 +7,15 @@ import com.zhousl.aether.channel.ChannelConfig
 import com.zhousl.aether.channel.ChannelConnectionState
 import com.zhousl.aether.channel.ChannelFile
 import com.zhousl.aether.channel.ChannelFileKind
+import com.zhousl.aether.channel.ChannelIncomingAttachment
 import com.zhousl.aether.channel.ChannelIncomingMessage
 import com.zhousl.aether.channel.ChannelKind
 import com.zhousl.aether.channel.ChannelReply
 import com.zhousl.aether.channel.ChannelSendReceipt
+import com.zhousl.aether.channel.channelMediaId
+import com.zhousl.aether.channel.channelMimeTypeForName
+import com.zhousl.aether.channel.decryptChannelAesEcb
+import com.zhousl.aether.channel.getBytes
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -92,19 +97,23 @@ class WeComChannel(
             }
             if (command != "aibot_msg_callback" && command != "aibot_event_callback") return
             val body = frame.optJSONObject("body") ?: return
-            if (body.optString("msgtype") != "text") return
             val sender = body.optJSONObject("from")?.optString("userid").orEmpty()
             val chatId = body.optString("chatid").ifBlank { sender }
-            val content = body.optJSONObject("text")?.optString("content").orEmpty().trim()
-            if (content.isBlank()) return
             requestIds[chatId] = requestId
             scope.launch {
+                val parsed = try {
+                    parseIncomingBody(body)
+                } catch (_: Throwable) {
+                    return@launch
+                }
+                if (parsed.first.isBlank() && parsed.second.isEmpty()) return@launch
                 emitIncoming(
                     ChannelIncomingMessage(
                         kind,
                         body.optString("msgid").ifBlank { "$sender:${body.optLong("send_time")}" },
                         ChannelAddress(chatId, sender, requestId),
-                        content,
+                        parsed.first,
+                        parsed.second,
                     )
                 )
             }
@@ -259,6 +268,92 @@ class WeComChannel(
 
     private fun md5(bytes: ByteArray): String =
         MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private suspend fun parseIncomingBody(
+        body: JSONObject,
+    ): Pair<String, List<ChannelIncomingAttachment>> {
+        val textParts = mutableListOf<String>()
+        val attachments = mutableListOf<ChannelIncomingAttachment>()
+        val messageId = body.optString("msgid").ifBlank { body.optString("send_time") }
+        parseWeComItem(
+            messageId = messageId,
+            type = body.optString("msgtype").lowercase(),
+            value = body,
+            textParts = textParts,
+            attachments = attachments,
+        )
+        return textParts.joinToString("\n") to attachments
+    }
+
+    private suspend fun parseWeComItem(
+        messageId: String,
+        type: String,
+        value: JSONObject,
+        textParts: MutableList<String>,
+        attachments: MutableList<ChannelIncomingAttachment>,
+    ) {
+        when (type) {
+            "text" -> value.optJSONObject("text")?.optString("content")
+                ?.trim()?.takeIf(String::isNotBlank)?.let(textParts::add)
+            "voice" -> {
+                val voice = value.optJSONObject("voice") ?: JSONObject()
+                voice.optString("content").trim().takeIf(String::isNotBlank)?.let(textParts::add)
+                    ?: addWeComAttachment(messageId, voice, "audio.amr", "audio/amr", attachments)
+            }
+            "image" -> addWeComAttachment(
+                messageId,
+                value.optJSONObject("image") ?: JSONObject(),
+                "image.jpg",
+                "image/jpeg",
+                attachments,
+            )
+            "file" -> {
+                val file = value.optJSONObject("file") ?: JSONObject()
+                val name = file.optString("filename").ifBlank { "file.bin" }
+                addWeComAttachment(messageId, file, name, channelMimeTypeForName(name), attachments)
+            }
+            "video" -> addWeComAttachment(
+                messageId,
+                value.optJSONObject("video") ?: JSONObject(),
+                "video.mp4",
+                "video/mp4",
+                attachments,
+            )
+            "mixed" -> {
+                val items = value.optJSONObject("mixed")?.optJSONArray("msg_item") ?: return
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    parseWeComItem(
+                        messageId = messageId,
+                        type = item.optString("msgtype").lowercase(),
+                        value = item,
+                        textParts = textParts,
+                        attachments = attachments,
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun addWeComAttachment(
+        messageId: String,
+        media: JSONObject,
+        name: String,
+        mimeType: String,
+        attachments: MutableList<ChannelIncomingAttachment>,
+    ) {
+        val url = media.optString("url")
+        if (url.isBlank()) return
+        val encrypted = http.getBytes(url)
+        val aesKey = media.optString("aeskey")
+        val bytes = if (aesKey.isBlank()) encrypted else decryptChannelAesEcb(encrypted, aesKey)
+        attachments += ChannelIncomingAttachment(
+            id = channelMediaId("wecom", "$messageId:$url"),
+            name = name,
+            mimeType = mimeType,
+            bytes = bytes,
+        )
+    }
 
     private companion object {
         const val ChunkSize = 512 * 1024
