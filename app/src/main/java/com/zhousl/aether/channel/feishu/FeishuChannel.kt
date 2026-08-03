@@ -182,7 +182,12 @@ class FeishuChannel(
                 sendPostMarkdown(reply.address, reply.text)
             }
         }
-        reply.files.forEach { receipt = sendFile(reply.address, it) }
+        reply.files.forEach {
+            val fileReceipt = sendFile(reply.address, it)
+            // Keep the text/card message as the turn receipt so the DONE
+            // reaction is attached to the assistant reply, not the last file.
+            if (receipt.messageId.isBlank()) receipt = fileReceipt
+        }
         receipt
     }
 
