@@ -462,6 +462,6 @@ class DingTalkChannel(
             .map { response.optString(it) }
             .firstOrNull(String::isNotBlank)
             ?: error("DingTalk media API returned no download URL")
-        http.getBytes(url)
+        return http.getBytes(url)
     }
 }
